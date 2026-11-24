@@ -267,7 +267,143 @@ def main():
         bs = np.asarray(binned_src)
         assert len(np.unique(bs[bs[..., 3] > 0][:, :3], axis=0)) == 2, "binned icon source must have 2 colors"
 
+    test_lasso_extraction()
+    test_dependencies()
     print("all tests passed")
+
+
+def test_dependencies():
+    # The in-app installer and requirements.txt must list the same packages
+    req = Path(__file__).resolve().parent / "requirements.txt"
+    req_names = {
+        line.split(">")[0].split("=")[0].split("<")[0].strip().lower()
+        for line in req.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+    assert req_names == {d[1].lower() for d in quickimage.DEPENDENCIES}, (req_names, quickimage.DEPENDENCIES)
+
+    # Missing packages are detected
+    fake = ("no_such_module_xyz", "no-such-package", "testing", False)
+    assert quickimage.missing_dependencies((fake,) + quickimage.DEPENDENCIES[:1]) == [fake]
+
+    with tempfile.TemporaryDirectory() as td:
+        # No venv yet: create it, then install every package into it
+        venv = Path(td) / ".venv"
+        cmds = quickimage.install_commands(venv=venv)
+        assert len(cmds) == 2 and cmds[0][1:3] == ["-m", "venv"] and cmds[0][-1] == str(venv), cmds
+        assert cmds[1][:4] == [str(quickimage.venv_python(venv)), "-m", "pip", "install"], cmds[1]
+        assert set(cmds[1]) >= {d[1] for d in quickimage.DEPENDENCIES}
+        assert not cmds[0][0].lower().endswith("pythonw.exe"), "venv must be created with a console python"
+        # Existing venv: only install
+        quickimage.venv_python(venv).parent.mkdir(parents=True)
+        quickimage.venv_python(venv).write_bytes(b"")
+        assert len(quickimage.install_commands(venv=venv)) == 1
+
+    # Command runner streams output and reports failures
+    lines, done = [], []
+    quickimage.run_commands(
+        [[sys.executable, "-c", "print('one'); print('two')"]], lines.append, lambda ok, err: done.append((ok, err))
+    )
+    assert "one" in lines and "two" in lines and done == [(True, None)], (lines, done)
+    done.clear()
+    quickimage.run_commands(
+        [[sys.executable, "-c", "import sys; sys.exit(3)"], [sys.executable, "-c", "print('never')"]],
+        lines.append,
+        lambda ok, err: done.append((ok, err)),
+    )
+    assert done and done[0][0] is False and "code 3" in done[0][1], done
+    assert "never" not in lines, "commands after a failure must not run"
+
+
+def make_busy_scene():
+    """Striped, noisy background where one stripe has the object's color; object = orange ellipse."""
+    rng = np.random.default_rng(3)
+    cols = [(40, 120, 200), (230, 140, 30), (60, 170, 80), (200, 60, 120), (240, 230, 220)]
+    bg = np.zeros((200, 200, 3), np.uint8)
+    for i in range(0, 200, 16):
+        bg[:, i : i + 16] = cols[(i // 16) % len(cols)]
+    bg = np.clip(bg.astype(int) + rng.integers(-20, 21, bg.shape), 0, 255).astype(np.uint8)
+    im = Image.fromarray(bg)
+    d = ImageDraw.Draw(im)
+    d.ellipse([60, 50, 140, 150], fill=(235, 135, 25))
+    d.ellipse([85, 80, 115, 110], fill=(30, 30, 30))  # dark interior detail (not a hole)
+    t = Image.new("L", (200, 200))
+    ImageDraw.Draw(t).ellipse([60, 50, 140, 150], fill=1)
+    truth = np.asarray(t).astype(bool)
+    ang = np.linspace(0, 2 * np.pi, 24, endpoint=False)
+    lasso = [(100 + 58 * np.cos(a) + rng.uniform(-4, 4), 100 + 64 * np.sin(a) + rng.uniform(-4, 4)) for a in ang]
+    return im, truth, lasso
+
+
+def iou(a, b):
+    return (a & b).sum() / max(1, (a | b).sum())
+
+
+def test_lasso_extraction():
+    try:
+        import cv2  # noqa: F401
+    except ImportError:
+        print("SKIPPED outline (GrabCut) tests: opencv-python-headless is not installed")
+        return
+
+    im, truth, lasso = make_busy_scene()
+
+    # The border-color method cannot isolate the object on a busy background...
+    old, _ = make_transparent(im)
+    assert iou(np.asarray(old)[..., 3] > 127, truth) < 0.9, "scene must be too busy for border-color matching"
+
+    # ...but a loose outline pulls it out
+    out, note = make_transparent(im, lasso=lasso)
+    oa = np.asarray(out)[..., 3]
+    assert note is None, f"unexpected note: {note}"
+    assert iou(oa > 127, truth) >= 0.9, f"outline cutout IoU {iou(oa > 127, truth):.3f}"
+    assert oa[100, 100] == 255 and oa[70, 100] == 255, "object interior (incl. dark detail) must be opaque"
+    assert oa[5, 5] == 0 and oa[100, 45] == 0, "background outside and inside the outline must be transparent"
+
+    # A one-color object cut from a multi-color scene bins to one print color (edges are
+    # un-mixed against their local background, and near-duplicate palette shades merge)
+    solid_scene = Image.fromarray(np.asarray(im).copy())
+    ImageDraw.Draw(solid_scene).ellipse([60, 50, 140, 150], fill=(235, 135, 25))
+    solid_out, _ = make_transparent(solid_scene, lasso=lasso)
+    _, solid_pal = quantize_foreground_colors(solid_out, n_colors=4)
+    assert len(solid_pal) == 1, f"single-color object should bin to 1 color, got {solid_pal}"
+
+    # Interior detail counts as a hole only when "remove interior holes" is on
+    holes, _ = make_transparent(im, lasso=lasso, remove_holes=True)
+    assert np.asarray(holes)[100, 100, 3] == 255, "dark detail differs from the background: stays opaque"
+
+    # A background hint inside the outline forces that spot to transparent
+    gap = Image.new("RGB", (120, 120), (240, 240, 240))
+    ImageDraw.Draw(gap).rectangle([30, 30, 90, 90], fill=(200, 40, 40))
+    ImageDraw.Draw(gap).rectangle([50, 50, 70, 70], fill=(240, 240, 240))  # enclosed bg-colored gap
+    box = [(20, 20), (100, 20), (100, 100), (20, 100)]
+    no_hint, _ = make_transparent(gap, lasso=box)
+    hinted, _ = make_transparent(gap, lasso=box, seeds=[(60, 60)], remove_holes=True)
+    assert np.asarray(no_hint)[60, 60, 3] == 255, "enclosed gap is filled when holes are kept"
+    assert np.asarray(hinted)[60, 60, 3] == 0, "hinted gap must become transparent"
+    assert np.asarray(hinted)[40, 40, 3] == 255, "object around the gap must stay opaque"
+
+    # Outline around plain background: no crash, falls back to the outline itself
+    flat = Image.new("RGB", (80, 80), (120, 120, 120))
+    fout, fnote = make_transparent(flat, lasso=[(10, 10), (70, 10), (70, 70), (10, 70)])
+    assert fnote == "outline used as-is", f"expected fallback note, got {fnote}"
+    assert np.asarray(fout)[40, 40, 3] == 255 and np.asarray(fout)[2, 2, 3] == 0
+
+    # Crop + transparency through the full pipeline hugs the object
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "busy.png"
+        im.save(src)
+        png, pnote = process(src, True, True, lasso=lasso)
+        assert "outline mode" in pnote, pnote
+        with Image.open(png) as res:
+            w, h = res.size
+        assert abs(w - 81) <= 3 and abs(h - 101) <= 3, f"cropped size {w}x{h} should hug the 81x101 ellipse"
+
+        # Crop to the outlined object without transparency keeps the surroundings opaque
+        crop_only, _ = process(src, False, True, lasso=lasso)
+        with Image.open(crop_only) as res:
+            assert abs(res.width - 81) <= 3 and abs(res.height - 101) <= 3, res.size
+            assert np.asarray(res.convert("RGBA"))[..., 3].min() == 255
 
 
 if __name__ == "__main__":

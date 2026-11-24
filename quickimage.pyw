@@ -8,6 +8,8 @@ import subprocess
 import sys
 import threading
 import tkinter
+import tkinter.font
+from tkinter import filedialog, ttk
 from collections import OrderedDict
 from pathlib import Path
 
@@ -54,16 +56,341 @@ if _venv_sp.is_dir() and not _running_in_venv(_venv):
     if _venv_python_version(_venv) == sys.version_info[:2]:
         site.addsitedir(str(_venv_sp))
 
+
+def set_app_user_model_id():
+    """Give the process its own Windows taskbar identity and make it DPI-aware.
+
+    Without the identity, Windows groups the window under pythonw.exe and shows Python's
+    icon in the taskbar. Without DPI awareness, Windows bitmap-stretches the whole window
+    on high-DPI screens, which makes all text blurry. Both must happen before Tk starts.
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+    try:
+        import ctypes
+
+        ctypes.windll.shcore.SetProcessDpiAwareness(1)  # system DPI aware
+    except Exception:
+        pass
+
+
+def set_window_icon(root):
+    """Title bar / taskbar / Alt-Tab icon. Missing icon files are not fatal."""
+    try:
+        if sys.platform == "win32" and APP_ICON_ICO.is_file():
+            root.iconbitmap(default=str(APP_ICON_ICO))  # .ico carries crisp small sizes
+        elif APP_ICON_PNG.is_file():
+            photo = tkinter.PhotoImage(file=str(APP_ICON_PNG))
+            root.iconphoto(True, photo)
+            root._app_icon = photo  # keep a reference so Tk does not drop the image
+    except tkinter.TclError:
+        pass
+
+
+# --- dependencies (standard library only: this must work when packages are missing) -----------
+
+DEPENDENCIES = (
+    # (import name, pip package, what it is used for, required to start the app)
+    ("numpy", "numpy", "Image math", True),
+    ("PIL", "pillow", "Opening and saving images", True),
+    ("scipy", "scipy", "Background removal and color cleanup", True),
+    ("tkinterdnd2", "tkinterdnd2", "Drag and drop", True),
+    ("cv2", "opencv-python-headless", "Object outline (cut out one object)", False),
+    ("sv_ttk", "sv-ttk", "Modern Windows 11 look", False),
+    ("darkdetect", "darkdetect", "Follow the Windows light / dark setting", False),
+)
+STATUS_OK = "#2E9E5B"
+STATUS_MISSING = "#D64545"
+
+
+def missing_dependencies(deps=None):
+    """The DEPENDENCIES entries that the running interpreter cannot import."""
+    import importlib
+    import importlib.util
+
+    importlib.invalidate_caches()  # see packages installed while the app is running
+    missing = []
+    for dep in DEPENDENCIES if deps is None else deps:
+        try:
+            found = importlib.util.find_spec(dep[0]) is not None
+        except (ImportError, ValueError):
+            found = False
+        if not found:
+            missing.append(dep)
+    return missing
+
+
+def venv_python(venv=_venv, windowed=False):
+    if sys.platform == "win32":
+        return venv / "Scripts" / ("pythonw.exe" if windowed else "python.exe")
+    return venv / "bin" / "python"
+
+
+def _console_python(exe):
+    """python.exe next to pythonw.exe: pip and venv need a console interpreter."""
+    p = Path(exe)
+    if p.name.lower() == "pythonw.exe" and p.with_name("python.exe").is_file():
+        return str(p.with_name("python.exe"))
+    return str(p)
+
+
+def install_commands(venv=_venv, deps=None):
+    """Commands that make the project's .venv complete: create it if needed, then pip install.
+
+    Everything goes into .venv (where the launcher runs the app from). All packages are
+    listed; pip skips the ones already installed, and a brand-new venv gets everything.
+    """
+    deps = DEPENDENCIES if deps is None else deps
+    cmds = []
+    if not venv_python(venv).is_file():
+        cmds.append([_console_python(sys.executable), "-m", "venv", str(venv)])
+    cmds.append(
+        [str(venv_python(venv)), "-m", "pip", "install", "--disable-pip-version-check", *[d[1] for d in deps]]
+    )
+    return cmds
+
+
+def run_commands(cmds, on_line, on_done):
+    """Run commands one after another (call from a worker thread), streaming their output."""
+    flags = 0x08000000 if sys.platform == "win32" else 0  # CREATE_NO_WINDOW: no console flash
+    try:
+        for cmd in cmds:
+            on_line("> " + " ".join(f'"{c}"' if " " in c else c for c in cmd))
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=flags,
+            )
+            for line in proc.stdout:
+                on_line(line.rstrip())
+            code = proc.wait()
+            if code != 0:
+                on_done(False, f"{Path(cmd[0]).name} exited with code {code}")
+                return
+    except OSError as exc:
+        on_done(False, str(exc))
+        return
+    on_done(True, None)
+
+
+def restart_app():
+    """Start a fresh copy of the app (under .venv when it exists); the caller then exits."""
+    exe = venv_python(windowed=True)
+    if not exe.is_file():
+        exe = Path(sys.executable)
+    env = {k: v for k, v in os.environ.items() if k != _RELAUNCH_ENV}
+    subprocess.Popen([str(exe), str(Path(__file__).resolve())], env=env)
+
+
+class DependencyDialog:
+    """Lists the packages Quick Image uses, shows which are missing, and installs them.
+
+    Uses only tkinter/ttk, so it also works at startup when required packages are missing.
+    """
+
+    def __init__(self, parent, startup_error=None, on_restart=None):
+        self.parent = parent
+        self.on_restart = on_restart
+        self.events = queue.Queue()
+        self.top = top = tkinter.Toplevel(parent)
+        top.title(f"{APP_NAME} — Dependencies")
+        top.resizable(True, True)
+        try:
+            if parent.winfo_viewable():
+                top.transient(parent)
+        except tkinter.TclError:
+            pass
+        self.frame = frame = ttk.Frame(top, padding=18)
+        frame.grid(sticky="nsew")
+        top.columnconfigure(0, weight=1)
+        top.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
+        self.missing = missing_dependencies()
+        if startup_error:
+            intro = (
+                f"{APP_NAME} could not start because required packages are missing "
+                f"({startup_error}). It can install them now into the .venv folder next to quickimage.pyw."
+            )
+        elif self.missing:
+            intro = "Some packages are missing. Quick Image can install them into its .venv folder."
+        else:
+            intro = "Everything Quick Image uses is installed."
+        ttk.Label(frame, text=intro, wraplength=520, justify="left").grid(row=0, column=0, sticky="w")
+
+        # Fonts derived from the theme's label font, so they match it at any DPI
+        body = tkinter.font.Font(top, font=ttk.Style(top).lookup("TLabel", "font") or "TkDefaultFont")
+        self._head_font = body.copy()
+        self._head_font.configure(weight="bold")
+        self._log_font = tkinter.font.Font(top, family="Consolas" if sys.platform == "win32" else "TkFixedFont",
+                                           size=body.actual("size"))
+
+        table = ttk.Frame(frame)
+        table.grid(row=1, column=0, sticky="ew", pady=(14, 10))
+        table.columnconfigure(1, weight=1)
+        for c, head in enumerate(("Package", "Used for", "Status")):
+            ttk.Label(table, text=head, font=self._head_font).grid(
+                row=0, column=c, sticky="w", padx=(0, 18), pady=(0, 4)
+            )
+        self.status_labels = {}
+        missing_names = {d[0] for d in self.missing}
+        for r, (mod, pip_name, purpose, required) in enumerate(DEPENDENCIES, start=1):
+            ttk.Label(table, text=pip_name).grid(row=r, column=0, sticky="w", padx=(0, 18), pady=1)
+            ttk.Label(table, text=purpose + ("" if required else " (optional)")).grid(
+                row=r, column=1, sticky="w", padx=(0, 18), pady=1
+            )
+            is_missing = mod in missing_names
+            lbl = ttk.Label(
+                table,
+                text=("Missing" if is_missing else "Installed"),
+                foreground=STATUS_MISSING if is_missing else STATUS_OK,
+            )
+            lbl.grid(row=r, column=2, sticky="w", pady=1)
+            self.status_labels[mod] = lbl
+
+        self.progress = ttk.Progressbar(frame, mode="indeterminate")
+        self.log = tkinter.Text(frame, height=10, width=80, wrap="none", font=self._log_font, state="disabled")
+        self.result = ttk.Label(frame, text="", wraplength=520, justify="left")
+
+        buttons = ttk.Frame(frame)
+        buttons.grid(row=5, column=0, sticky="e", pady=(12, 0))
+        self.btn_install = ttk.Button(
+            buttons,
+            text=f"Install missing ({len(self.missing)})" if self.missing else "Reinstall all",
+            command=self.install,
+        )
+        try:
+            self.btn_install.configure(style="Accent.TButton")
+        except tkinter.TclError:
+            pass
+        self.btn_restart = ttk.Button(buttons, text=f"Restart {APP_NAME}", command=self.restart)
+        self.btn_close = ttk.Button(buttons, text="Close", command=self.close)
+        self.btn_install.grid(row=0, column=0, padx=(0, 8))
+        self.btn_close.grid(row=0, column=2)
+        top.protocol("WM_DELETE_WINDOW", self.close)
+        top.bind("<Escape>", lambda _e: self.close())
+        self._installing = False
+
+    def install(self):
+        if self._installing:
+            return
+        self._installing = True
+        self.btn_install.state(["disabled"])
+        self.btn_close.state(["disabled"])
+        self.progress.grid(row=2, column=0, sticky="ew", pady=(0, 8))
+        self.progress.start(12)
+        self.log.grid(row=3, column=0, sticky="nsew")
+        self.frame.rowconfigure(3, weight=1)
+        self.result.configure(text="")
+        cmds = install_commands()
+        threading.Thread(
+            target=run_commands,
+            args=(cmds, lambda line: self.events.put(("line", line)), lambda ok, err: self.events.put(("done", (ok, err)))),
+            name="quickimage-install",
+            daemon=True,
+        ).start()
+        self.top.after(80, self._poll)
+
+    def _poll(self):
+        try:
+            while True:
+                kind, value = self.events.get_nowait()
+                if kind == "line":
+                    self.log.configure(state="normal")
+                    self.log.insert("end", value + "\n")
+                    self.log.see("end")
+                    self.log.configure(state="disabled")
+                else:
+                    self._finished(*value)
+                    return
+        except queue.Empty:
+            pass
+        self.top.after(80, self._poll)
+
+    def _finished(self, ok, err):
+        self._installing = False
+        self.progress.stop()
+        self.progress.grid_remove()
+        self.btn_close.state(["!disabled"])
+        still = missing_dependencies()
+        missing_names = {d[0] for d in still}
+        for mod, lbl in self.status_labels.items():
+            gone = mod not in missing_names
+            lbl.configure(
+                text="Installed" if gone else "Missing", foreground=STATUS_OK if gone else STATUS_MISSING
+            )
+        self.result.grid(row=4, column=0, sticky="w", pady=(8, 0))
+        if ok:
+            self.result.configure(
+                text=f"Done. Restart {APP_NAME} to use the new packages.", foreground=STATUS_OK
+            )
+            self.btn_restart.grid(row=0, column=1, padx=(0, 8))
+            try:
+                self.btn_restart.configure(style="Accent.TButton")
+                self.btn_install.configure(style="TButton")
+            except tkinter.TclError:
+                pass
+        else:
+            self.result.configure(text=f"Installation failed: {err}. See the log above.", foreground=STATUS_MISSING)
+            self.btn_install.state(["!disabled"])
+
+    def restart(self):
+        if self.on_restart is not None:
+            self.on_restart()
+        else:
+            restart_app()
+            self.close()
+
+    def close(self):
+        if self._installing:
+            return
+        self.top.destroy()
+
+
+def _startup_missing_packages(exc):
+    """Required packages are missing: offer to install them instead of failing silently."""
+    try:
+        set_app_user_model_id()  # DPI awareness + taskbar identity, before the window exists
+        root = tkinter.Tk()
+        root.withdraw()
+        root.title(APP_NAME)
+        set_window_icon(root)
+        try:
+            import sv_ttk
+
+            sv_ttk.set_theme("light")
+        except Exception:
+            pass
+        root.update()  # let the theme finish applying (fonts, colors) before building the dialog
+        dlg = DependencyDialog(root, startup_error=exc)
+        root.wait_window(dlg.top)
+        root.destroy()
+    except Exception:
+        print(f"{APP_NAME} could not start: {exc}\nInstall the packages in requirements.txt.", file=sys.stderr)
+
+
 try:
     import numpy as np
-    from PIL import Image, ImageOps, ImageTk
+    from PIL import Image, ImageDraw, ImageOps, ImageTk
     from scipy.ndimage import (
         binary_dilation,
         binary_erosion,
         binary_fill_holes,
+        binary_opening,
         distance_transform_edt,
         label,
         median_filter,
+        uniform_filter,
     )
 
     from tkinterdnd2 import TkinterDnD, DND_FILES, COPY
@@ -71,22 +398,7 @@ except ImportError as _exc:
     if __name__ != "__main__":
         raise
     # pythonw has no console, so a missing package would otherwise fail silently
-    _msg = (
-        f"{APP_NAME} could not start: {_exc}\n\n"
-        f"Python {sys.version.split()[0]} at {sys.executable}\n\n"
-        "Install the dependencies into a venv next to quickimage.pyw:\n"
-        "    py -m venv .venv\n"
-        "    .venv\\Scripts\\python -m pip install -r requirements.txt"
-    )
-    try:
-        from tkinter import messagebox
-
-        _r = tkinter.Tk()
-        _r.withdraw()
-        messagebox.showerror(APP_NAME, _msg)
-        _r.destroy()
-    except Exception:
-        print(_msg, file=sys.stderr)
+    _startup_missing_packages(_exc)
     raise SystemExit(1)
 
 BG_TOL = 90
@@ -228,9 +540,14 @@ _ANALYSIS_CACHE_SIZE = 2
 _ANALYSIS_LOCK = threading.Lock()
 
 
+def _image_key(a):
+    """Exact content key for an image array (used by the analysis and outline caches)."""
+    return (a.shape, a.dtype.str, hashlib.blake2b(np.ascontiguousarray(a).data, digest_size=16).digest())
+
+
 def get_analysis(a):
     """Cached _Analysis for image array `a`, keyed by an exact content digest."""
-    key = (a.shape, a.dtype.str, hashlib.blake2b(np.ascontiguousarray(a).data, digest_size=16).digest())
+    key = _image_key(a)
     with _ANALYSIS_LOCK:
         hit = _ANALYSIS_CACHE.get(key)
         if hit is not None:
@@ -303,6 +620,209 @@ def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None):
     return vis, dist, bg_field, eff_tol
 
 
+GRABCUT_MAX_SIDE = 640  # GrabCut runs on the outline's window downscaled to at most this
+GRABCUT_ITERS = 5
+OPENCV_HINT = "Object outline needs OpenCV (opencv-python-headless) — click Dependencies to install it."
+
+_LASSO_CACHE = OrderedDict()  # (image key, outline, hints, holes) -> (alpha, bg color, note)
+_LASSO_CACHE_SIZE = 4
+
+
+def _polygon_mask(width, height, pts):
+    m = Image.new("L", (width, height), 0)
+    ImageDraw.Draw(m).polygon([(float(x), float(y)) for x, y in pts], fill=1)
+    return np.asarray(m).astype(bool)
+
+
+def lasso_object_mask(rgb, lasso, bg_hints=None, remove_holes=False):
+    """Cut out the object inside a loose user outline with GrabCut.
+
+    rgb: (h, w, 3) uint8. lasso: [(x, y), ...] polygon in pixel coordinates around the object.
+    bg_hints: optional (x, y) points known to be background (e.g. a gap inside the outline).
+    Returns (alpha float32 0..1 of shape (h, w), background RGB color near the outline, note or None).
+    Everything outside the outline is background; inside, GrabCut decides along color edges.
+    """
+    try:
+        import cv2
+    except ImportError as exc:
+        raise RuntimeError(OPENCV_HINT) from exc
+
+    h, w = rgb.shape[:2]
+    pts = np.asarray(lasso, dtype=np.float64)
+    # Work window: the outline's bounding box plus a margin, clipped to the image
+    margin = 0.1 * max(np.ptp(pts[:, 0]), np.ptp(pts[:, 1])) + 4
+    x0 = int(max(0, np.floor(pts[:, 0].min() - margin)))
+    y0 = int(max(0, np.floor(pts[:, 1].min() - margin)))
+    x1 = int(min(w, np.ceil(pts[:, 0].max() + margin) + 1))
+    y1 = int(min(h, np.ceil(pts[:, 1].max() + margin) + 1))
+    win_w, win_h = x1 - x0, y1 - y0
+    alpha = np.zeros((h, w), dtype=np.float32)
+    if win_w < 3 or win_h < 3:
+        return alpha, np.zeros(3, np.float32), "outline too small"
+
+    s = min(1.0, GRABCUT_MAX_SIDE / max(win_w, win_h))
+    sw, sh = max(3, round(win_w * s)), max(3, round(win_h * s))
+    sx, sy = sw / win_w, sh / win_h
+    win_im = Image.fromarray(np.ascontiguousarray(rgb[y0:y1, x0:x1]))
+    small = np.asarray(win_im.resize((sw, sh), Image.BOX) if s < 1.0 else win_im)
+    inside = _polygon_mask(sw, sh, [((x - x0) * sx, (y - y0) * sy) for x, y in pts])
+
+    # Background color right around the outline: used to un-mix soft edge pixels
+    ring = binary_dilation(inside, structure=BOX3, iterations=2) & ~inside
+    bg_col = np.median(small[ring], axis=0).astype(np.float32) if ring.any() else np.zeros(3, np.float32)
+
+    def polygon_fallback(note):
+        poly = Image.fromarray((inside * 255).astype(np.uint8)).resize((win_w, win_h), Image.BILINEAR)
+        alpha[y0:y1, x0:x1] = np.asarray(poly, dtype=np.float32) / 255.0
+        return alpha, bg_col, note
+
+    gc = np.where(inside, cv2.GC_PR_FGD, cv2.GC_BGD).astype(np.uint8)
+    for hx, hy in bg_hints or ():
+        cx, cy = int(round((hx - x0) * sx)), int(round((hy - y0) * sy))
+        if 0 <= cx < sw and 0 <= cy < sh:
+            gc[max(0, cy - 1) : cy + 2, max(0, cx - 1) : cx + 2] = cv2.GC_BGD
+    n_bg = int((gc == cv2.GC_BGD).sum())
+    n_fg = int((gc == cv2.GC_PR_FGD).sum())
+    if n_bg < 16 or n_fg < 16:  # GrabCut needs samples of both
+        return polygon_fallback("outline used as-is")
+
+    bgd_model = np.zeros((1, 65), np.float64)
+    fgd_model = np.zeros((1, 65), np.float64)
+    cv2.grabCut(np.ascontiguousarray(small[..., ::-1]), gc, None, bgd_model, fgd_model, GRABCUT_ITERS,
+                cv2.GC_INIT_WITH_MASK)
+    fg = (gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD)
+    # Drop 1-px slivers (downscaling blends background edges into colors GrabCut may call object)
+    opened = binary_opening(fg, structure=CROSS)
+    if opened.any():
+        fg = opened
+
+    # Keep only the pieces in the heart of the outline; drop stray blobs near its edge
+    lab, n = label(fg, structure=CROSS)
+    if n > 1:
+        depth = distance_transform_edt(inside)
+        core = depth >= 0.25 * depth.max()
+        keep = np.unique(lab[core & fg])
+        keep = keep[keep > 0]
+        if keep.size == 0:
+            keep = np.array([np.argmax(np.bincount(lab.ravel())[1:]) + 1])
+        fg = np.isin(lab, keep)
+    if not remove_holes:
+        fg = binary_fill_holes(fg)
+    if not fg.any():
+        return polygon_fallback("outline used as-is")
+
+    # Back to full resolution; bilinear upscaling gives a soft ~1 source-px edge ramp
+    up = Image.fromarray((fg * 255).astype(np.uint8))
+    if s < 1.0:
+        up = up.resize((win_w, win_h), Image.BILINEAR)
+    a_win = np.asarray(up, dtype=np.float32) / 255.0
+    if s < 1.0:
+        a_win = _refine_edge_band(rgb[y0:y1, x0:x1], a_win, radius=int(np.ceil(1.0 / s)) + 1)
+    alpha[y0:y1, x0:x1] = a_win
+    return alpha, bg_col, None
+
+
+def _refine_edge_band(rgb, a_up, radius):
+    """Sharpen an upscaled (blurry, misplaced by up to ~1 work px) mask at full resolution.
+
+    Only pixels within `radius` of the coarse edge change. Each one is unmixed between the
+    local object color F and local background color B (box-filtered means of the confident
+    pixels nearby): alpha = projection of the pixel color onto the B->F segment.
+    """
+    edge = (a_up > 0.02) & (a_up < 0.98)
+    if not edge.any():
+        return a_up
+    band = binary_dilation(edge, structure=BOX3, iterations=radius)
+    ys, xs = np.nonzero(band)
+    by0, by1 = max(0, ys.min() - 2 * radius), min(a_up.shape[0], ys.max() + 2 * radius + 1)
+    bx0, bx1 = max(0, xs.min() - 2 * radius), min(a_up.shape[1], xs.max() + 2 * radius + 1)
+    sl = (slice(by0, by1), slice(bx0, bx1))
+    c = rgb[sl].astype(np.float32)
+    a = a_up[sl]
+    fgc = (a >= 0.98) & ~band[sl]
+    bgc = (a <= 0.02) & ~band[sl]
+    size = 4 * radius + 1
+
+    def local_mean(conf):
+        n = uniform_filter(conf.astype(np.float32), size=size, mode="nearest")
+        sums = uniform_filter(c * conf[..., None], size=(size, size, 1), mode="nearest")
+        return sums / np.maximum(n, 1e-6)[..., None], n > 1e-3
+
+    F, has_f = local_mean(fgc)
+    B, has_b = local_mean(bgc)
+    fb = F - B
+    fb2 = (fb * fb).sum(axis=-1)
+    usable = band[sl] & has_f & has_b & (fb2 > 30.0 ** 2)  # need contrast between the two sides
+    proj = ((c - B) * fb).sum(axis=-1) / np.maximum(fb2, 1e-6)
+    out = a_up.copy()
+    region = out[sl]
+    region[usable] = np.clip(proj[usable], 0.0, 1.0)
+    return out
+
+
+def get_lasso_mask(rgb, lasso, bg_hints=None, remove_holes=False):
+    """Cached lasso_object_mask: toggling crop/binning or exporting reuses the GrabCut result."""
+    key = (
+        _image_key(rgb),
+        tuple((round(float(x), 2), round(float(y), 2)) for x, y in lasso),
+        tuple((round(float(x), 2), round(float(y), 2)) for x, y in bg_hints or ()),
+        bool(remove_holes),
+        GRABCUT_MAX_SIDE,
+    )
+    with _ANALYSIS_LOCK:
+        hit = _LASSO_CACHE.get(key)
+        if hit is not None:
+            _LASSO_CACHE.move_to_end(key)
+            return hit
+    result = lasso_object_mask(rgb, lasso, bg_hints=bg_hints, remove_holes=remove_holes)
+    result[0].flags.writeable = False
+    with _ANALYSIS_LOCK:
+        _LASSO_CACHE[key] = result
+        while len(_LASSO_CACHE) > _LASSO_CACHE_SIZE:
+            _LASSO_CACHE.popitem(last=False)
+    return result
+
+
+def _decontaminate(rgb, alpha, bg, zone):
+    """Un-mix background color spill from semi-transparent pixels in `zone` (in place on float rgb).
+
+    bg is either a per-pixel (h, w, 3) background field or a single (3,) color.
+    """
+    zone = zone & (alpha > 0) & (alpha < 250)
+    if zone.any():
+        al = (alpha[zone].astype(np.float32) / 255.0)[:, None]
+        bg_z = bg[zone] if np.ndim(bg) == 3 else np.asarray(bg, np.float32)[None, :]
+        fg_est = (rgb[zone] - (1.0 - al) * bg_z) / np.maximum(al, 0.2)
+        rgb[zone] = np.clip(fg_est, 0.0, 255.0)
+    return rgb
+
+
+def _decontaminate_local(rgb, alpha, fallback_bg, reach=6):
+    """Un-mix soft edge pixels against the color of their nearest fully transparent neighbor.
+
+    Busy backgrounds have different colors on different sides of an object, so a single
+    background color would tint the fringe; the nearest background pixel is what actually
+    bled into each edge pixel. Works on the edge's bounding box only (in place on float rgb).
+    """
+    soft = (alpha > 0) & (alpha < 255)
+    box = _mask_bbox(soft)
+    if box is None:
+        return rgb
+    h, w = alpha.shape
+    x0, y0 = max(0, box[0] - reach), max(0, box[1] - reach)
+    x1, y1 = min(w, box[2] + reach), min(h, box[3] + reach)
+    sub_a = alpha[y0:y1, x0:x1]
+    sub_rgb = rgb[y0:y1, x0:x1]  # view: writes go to rgb
+    clear = sub_a == 0
+    if clear.any():
+        iy, ix = distance_transform_edt(~clear, return_distances=False, return_indices=True)
+        bg_field = sub_rgb[iy, ix]
+    else:
+        bg_field = np.broadcast_to(np.asarray(fallback_bg, np.float32), sub_rgb.shape)
+    _decontaminate(sub_rgb, sub_a, bg_field, soft[y0:y1, x0:x1])
+    return rgb
+
+
 def load_rgba(path):
     with Image.open(path) as src:
         try:
@@ -313,9 +833,20 @@ def load_rgba(path):
         return im.convert("RGBA")
 
 
-def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None):
+def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None):
+    """Make the background transparent.
+
+    Without `lasso`: background = colors matching the image border (plus picked `seeds`).
+    With `lasso`: only the object inside the outline is kept (GrabCut); seeds are background hints.
+    """
     im = im.convert("RGBA")
     a_u8 = np.asarray(im)
+    if lasso:
+        alpha_f, bg_col, note = get_lasso_mask(a_u8[..., :3], lasso, bg_hints=seeds, remove_holes=remove_holes)
+        alpha = np.minimum(a_u8[..., 3], np.round(alpha_f * 255.0)).astype(np.uint8)
+        rgb_out = a_u8[..., :3].astype(np.float32)
+        _decontaminate_local(rgb_out, alpha, fallback_bg=bg_col)
+        return Image.fromarray(np.dstack([rgb_out.astype(np.uint8), alpha])), note
     if (a_u8[..., 3] < 255).any() and not seeds:
         return im, "already transparent"
     a = a_u8.astype(np.int16)
@@ -344,13 +875,7 @@ def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None):
         alpha[fringe_zone] = np.minimum(alpha[fringe_zone], new_alpha)
 
     # Decontaminate background color spill from semi-transparent edge pixels
-    rgb_out = a_u8[:, :, :3].astype(np.float32).copy()
-    decontam = fringe_zone & (alpha > 0) & (alpha < 250)
-    if decontam.any():
-        al = (alpha[decontam].astype(np.float32) / 255.0)[:, None]
-        denom = np.maximum(al, 0.2)
-        fg_est = (rgb_out[decontam] - (1.0 - al) * bg_field[decontam]) / denom
-        rgb_out[decontam] = np.clip(fg_est, 0.0, 255.0)
+    rgb_out = _decontaminate(a_u8[:, :, :3].astype(np.float32), alpha, bg_field, fringe_zone)
 
     out = np.dstack([rgb_out.astype(np.uint8), alpha])
     return Image.fromarray(out), None
@@ -367,6 +892,11 @@ def content_bbox(im, tol=BG_TOL, remove_holes=False, seeds=None):
             fg = ~vis & (dist > eff_tol)
         else:
             fg = dist > eff_tol
+    return _mask_bbox(fg)
+
+
+def _mask_bbox(fg):
+    """(left, top, right, bottom) of the True pixels in a 2D mask, or None if there are none."""
     rows = np.where(fg.any(axis=1))[0]
     cols = np.where(fg.any(axis=0))[0]
     if len(rows) == 0 or len(cols) == 0:
@@ -495,6 +1025,25 @@ def _despeckle(idx_map, fg_mask, n_bins, min_area, max_passes=8):
         idx_map[change] = target[change]
 
 
+PALETTE_MERGE_DIST = 30.0  # color_dist below which two palette colors are the same "filament"
+
+
+def _merge_close_centers(centers, labels):
+    """Drop palette colors nearly identical to a more common one.
+
+    Asking for more colors than the picture has makes k-means split one real color into
+    near-identical shades, which would mean pointless extra print colors.
+    """
+    counts = np.bincount(labels, minlength=len(centers))
+    kept = []
+    for k in np.argsort(-counts, kind="stable"):
+        if counts[k] == 0:
+            continue
+        if all(color_dist(centers[k][None], centers[j])[0] >= PALETTE_MERGE_DIST for j in kept):
+            kept.append(k)
+    return centers[sorted(kept)]
+
+
 def quantize_foreground_colors(im, n_colors=DEFAULT_SVG_COLORS, despeckle_area=9, keep_alpha=False):
     """Quantize opaque foreground pixels into the N best representative colors.
 
@@ -551,6 +1100,7 @@ def quantize_foreground_colors(im, n_colors=DEFAULT_SVG_COLORS, despeckle_area=9
                 centers = new_centers
                 break
             centers = new_centers
+        centers = _merge_close_centers(centers, nearest_center(train_rgb, centers))
 
     palette = np.unique(np.clip(np.round(centers), 0, 255).astype(np.uint8), axis=0)
 
@@ -777,18 +1327,31 @@ def render_preview(
     seeds=None,
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
+    lasso=None,
 ):
-    """Run transparency/crop/binning/icon steps in-memory without writing files."""
+    """Run transparency/crop/binning/icon steps in-memory without writing files.
+
+    `lasso` (an outline around one object, in image pixels) switches transparency to
+    "keep only that object"; with transparency off it still crops to the object.
+    """
     notes = []
     crop_box = (0, 0, im.width, im.height)
+    lasso = list(lasso) if lasso else None
     # Background picks are part of transparency; ignore them when it is switched off.
     seeds = seeds if do_transp else None
+    if lasso:
+        notes.append("outline mode")
     if do_transp:
-        im, note = make_transparent(im, tol=tol, remove_holes=remove_holes, seeds=seeds)
+        im, note = make_transparent(im, tol=tol, remove_holes=remove_holes, seeds=seeds, lasso=lasso)
         if note:
             notes.append(note)
     if do_crop:
-        box = content_bbox(im, tol=tol, remove_holes=remove_holes, seeds=seeds)
+        if lasso and not do_transp:
+            # Crop to the outlined object but keep its surroundings opaque
+            alpha_f, _, _ = get_lasso_mask(np.asarray(im.convert("RGB")), lasso, remove_holes=remove_holes)
+            box = _mask_bbox(alpha_f > 16 / 255.0)
+        else:
+            box = content_bbox(im, tol=tol, remove_holes=remove_holes, seeds=seeds)
         if box and box != (0, 0, im.width, im.height):
             crop_box = box
             im = im.crop(box)
@@ -813,6 +1376,7 @@ def _process_with_preview(
     do_svg=False,
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
+    lasso=None,
 ):
     path = Path(path)
     im = load_rgba(path)
@@ -826,6 +1390,7 @@ def _process_with_preview(
         seeds=seeds,
         bin_colors=bool(bin_colors and not do_svg),  # SVG bins below, exactly once
         n_colors=n_colors,
+        lasso=lasso,
     )
     if do_svg:
         binned, palette = quantize_foreground_colors(im, n_colors=n_colors)
@@ -855,6 +1420,7 @@ def process(
     do_svg=False,
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
+    lasso=None,
 ):
     out, note, _, _ = _process_with_preview(
         path,
@@ -867,6 +1433,7 @@ def process(
         do_svg=do_svg,
         bin_colors=bin_colors,
         n_colors=n_colors,
+        lasso=lasso,
     )
     return out, note
 
@@ -875,50 +1442,103 @@ def is_image_file(p):
     return Path(p).suffix.lower() in IMG_EXT
 
 
-def set_app_user_model_id():
-    """Give the process its own Windows taskbar identity.
+# Colors for the parts the app draws itself (canvas, checkerboard, outline, links)
+PALETTES = {
+    "light": {
+        "canvas": "#E8E8E8",
+        "check": (255, 255, 255, 228, 228, 228),
+        "text": "#1F1F1F",
+        "muted": "#6B6B6B",
+        "accent": "#005FB8",
+        "outline": "#E5484D",
+    },
+    "dark": {
+        "canvas": "#161616",
+        "check": (66, 66, 66, 52, 52, 52),
+        "text": "#F3F3F3",
+        "muted": "#9E9E9E",
+        "accent": "#60CDFF",
+        "outline": "#FF6B6B",
+    },
+}
 
-    Without this, Windows groups the window under pythonw.exe and shows Python's icon
-    in the taskbar instead of ours.
+
+def apply_theme(root):
+    """Sun Valley (Windows 11 style) ttk theme, light or dark following the OS. Returns (palette, mode).
+
+    Falls back to a built-in ttk theme if sv-ttk / darkdetect are not installed.
     """
+    mode = "light"
+    try:
+        import darkdetect
+
+        mode = "dark" if (darkdetect.theme() or "").lower() == "dark" else "light"
+    except Exception:
+        pass
+    try:
+        import sv_ttk
+
+        sv_ttk.set_theme(mode)
+    except Exception:
+        mode = "light"
+        style = ttk.Style(root)
+        for name in ("vista", "clam"):
+            if name in style.theme_names():
+                style.theme_use(name)
+                break
+    return PALETTES[mode], mode
+
+
+def set_dark_title_bar(root, dark):
+    """Match the Windows title bar to the theme (Windows 10 20H1+ / 11); no-op elsewhere."""
     if sys.platform != "win32":
         return
     try:
         import ctypes
 
-        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        root.update_idletasks()  # the native window must exist
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id()) or root.winfo_id()
+        value = ctypes.c_int(1 if dark else 0)
+        for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (newer, then older builds)
+            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+                break
     except Exception:
         pass
 
 
-def set_window_icon(root):
-    """Title bar / taskbar / Alt-Tab icon. Missing icon files are not fatal."""
-    try:
-        if sys.platform == "win32" and APP_ICON_ICO.is_file():
-            root.iconbitmap(default=str(APP_ICON_ICO))  # .ico carries crisp small sizes
-        elif APP_ICON_PNG.is_file():
-            photo = tkinter.PhotoImage(file=str(APP_ICON_PNG))
-            root.iconphoto(True, photo)
-            root._app_icon = photo  # keep a reference so Tk does not drop the image
-    except tkinter.TclError:
-        pass
+def reveal_in_folder(path):
+    """Open the file manager with `path` selected (or its folder, where selecting is not supported)."""
+    path = Path(path)
+    if sys.platform == "win32":
+        subprocess.Popen(f'explorer /select,"{path}"')
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", "-R", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path.parent)])
 
 
 class App:
-    CAP_W = 880
-    CAP_H = 640
+    DRAG_MIN_PX = 4  # total mouse movement below this is a click, not an outline
+    VIEW_MARGIN = 12  # px between the preview and the canvas edge
 
     def __init__(self):
         set_app_user_model_id()  # must happen before the first window is created
         self.root = TkinterDnD.Tk()
         self.root.title(APP_NAME)
         set_window_icon(self.root)
-        self.root.geometry("920x580")
-        self.root.bind("<Escape>", lambda e: self.root.destroy())
+        self.palette, self.theme_mode = apply_theme(self.root)
+        set_dark_title_bar(self.root, self.theme_mode == "dark")
+        self.ui_scale = self.root.winfo_fpixels("1i") / 96.0  # 1.0 at 100 %, 1.5 at 150 %
+        self.root.geometry(f"{self.px(1180)}x{self.px(760)}")
+        self.root.minsize(self.px(900), self.px(600))
+        self.root.bind("<Escape>", lambda _e: self.cancel_drag())
+        self.root.bind("<Control-o>", lambda _e: self.open_dialog())
+        self.root.bind("<KeyPress-space>", self.compare_start)
+        self.root.bind("<KeyRelease-space>", self.compare_end)
 
         self.canvas = None
-        self.bw = 0
-        self.bh = 0
+        self.bw = 1
+        self.bh = 1
         self.current_path = None
         self.source_rgba = None
         self.preview_src = None  # source_rgba, downscaled for fast live previews of big images
@@ -927,13 +1547,24 @@ class App:
         self.tkimg = None
         self.last_preview = None
         self.last_label = None
+        self.last_output = None  # most recent exported file (for "Show in folder")
         self.seeds = []
+        self.lasso = []  # outline around one object, in full-resolution source pixels
+        self._drag = None  # canvas points of the outline being drawn
+        self._drag_far = False  # the press moved enough to be a drag, not a click
         self._preview_job = None
+        self._resize_job = None
         self._disp_scale = 1.0
         self._disp_size = (1, 1)
         self._crop_box = None
         self._is_icon_preview = False
         self._busy = False  # an export is running on the worker thread
+        self._comparing = False  # "hold to compare" is showing the original
+        self._empty_icon = None
+
+    def px(self, v):
+        """Scale a design size in px (at 100 %) to the screen's DPI."""
+        return int(round(v * self.ui_scale))
 
     def _get_color_count(self):
         """Return (count, valid). Invalid spinbox text falls back to the default count."""
@@ -942,10 +1573,31 @@ class App:
         except (tkinter.TclError, ValueError):
             return DEFAULT_SVG_COLORS, False
 
+    # --- layout -----------------------------------------------------------------------------
+
+    def _init_styles(self):
+        pal = self.palette
+        style = ttk.Style(self.root)
+        base = tkinter.font.nametofont("TkDefaultFont")
+        family = base.actual("family")
+        size = base.actual("size")
+        semibold = "Segoe UI Semibold" if sys.platform == "win32" else family
+        style.configure("Section.TLabel", font=(semibold, max(8, size - 1)), foreground=pal["muted"])
+        style.configure("Hint.TLabel", foreground=pal["muted"])
+        style.configure("Title.TLabel", font=(semibold, size + 2))
+        style.configure("Muted.TLabel", foreground=pal["muted"])
+        # The link must match the status text next to it, so derive it from the theme's label font
+        self._link_font = tkinter.font.Font(self.root, font=style.lookup("TLabel", "font") or "TkDefaultFont")
+        self._link_font.configure(underline=True)
+        style.configure("Link.TLabel", foreground=pal["accent"], font=self._link_font)
+        style.configure("Status.TLabel", foreground=pal["text"])
+
     def build_ui(self):
-        self.root.columnconfigure(0, weight=1)
-        self.root.columnconfigure(1, weight=1)
-        self.set_box(440, 380)
+        self._init_styles()
+        P = self.px
+        root = self.root
+        root.columnconfigure(0, weight=1)
+        root.rowconfigure(0, weight=1)
 
         self.opt_transp = tkinter.BooleanVar(value=False)
         self.opt_holes = tkinter.BooleanVar(value=False)
@@ -954,165 +1606,413 @@ class App:
         self.opt_colors = tkinter.IntVar(value=DEFAULT_SVG_COLORS)
         self.opt_tol = tkinter.IntVar(value=BG_TOL)
 
-        panel = tkinter.Frame(self.root)
-        panel.grid(row=0, column=1, padx=24, pady=24, sticky="n")
-        self.chk_t = tkinter.Checkbutton(
-            panel, variable=self.opt_transp, text="make background transparent", command=self.schedule_live_preview
+        # ---- main area: header + preview ----
+        main = ttk.Frame(root, padding=(P(16), P(12), P(8), P(8)))
+        main.grid(row=0, column=0, sticky="nsew")
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(1, weight=1)
+
+        header = ttk.Frame(main)
+        header.grid(row=0, column=0, sticky="ew", pady=(0, P(10)))
+        header.columnconfigure(2, weight=1)
+        self.btn_open = ttk.Button(header, text="Open…", command=self.open_dialog)
+        self.btn_open.grid(row=0, column=0, padx=(0, P(12)))
+        self.file_label = ttk.Label(header, text="No image", style="Title.TLabel")
+        self.file_label.grid(row=0, column=1, sticky="w")
+        self.info_label = ttk.Label(header, text="", style="Muted.TLabel")
+        self.info_label.grid(row=0, column=2, sticky="w", padx=(P(10), 0))
+        self.btn_compare = ttk.Button(header, text="Hold to compare")
+        self.btn_compare.grid(row=0, column=3, sticky="e")
+        self.btn_compare.bind("<ButtonPress-1>", self.compare_start)
+        self.btn_compare.bind("<ButtonRelease-1>", self.compare_end)
+
+        self.canvas = tkinter.Canvas(
+            main, highlightthickness=0, borderwidth=0, background=self.palette["canvas"], cursor="crosshair"
         )
-        self.chk_h = tkinter.Checkbutton(
-            panel, variable=self.opt_holes, text="remove interior holes", command=self.schedule_live_preview
+        self.canvas.grid(row=1, column=0, sticky="nsew")
+        # sv-ttk recolors every classic Tk widget (tk_setPalette) when the theme event arrives,
+        # which happens after this point; put the canvas color back afterwards.
+        root.bind("<<ThemeChanged>>", lambda _e: root.after_idle(self._apply_canvas_color), add="+")
+        root.after_idle(self._apply_canvas_color)
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
+        self.canvas.bind("<ButtonPress-1>", self.on_press)
+        self.canvas.bind("<B1-Motion>", self.on_motion)
+        self.canvas.bind("<ButtonRelease-1>", self.on_release)
+        self.canvas.bind("<Button-3>", lambda _e: self.clear_picks())
+
+        # ---- sidebar ----
+        ttk.Separator(root, orient="vertical").grid(row=0, column=1, sticky="ns")
+        side = ttk.Frame(root, padding=(P(18), P(14), P(18), P(12)))
+        side.grid(row=0, column=2, sticky="nsew")
+        side.columnconfigure(0, weight=1)
+        wrap = P(250)
+        row = 0
+
+        def section(title, first=False):
+            nonlocal row
+            if not first:
+                ttk.Separator(side).grid(row=row, column=0, sticky="ew", pady=(P(14), P(12)))
+                row += 1
+            ttk.Label(side, text=title.upper(), style="Section.TLabel").grid(
+                row=row, column=0, sticky="w", pady=(0, P(6))
+            )
+            row += 1
+
+        def place(widget, **kw):
+            nonlocal row
+            widget.grid(row=row, column=0, sticky=kw.pop("sticky", "w"), **kw)
+            row += 1
+
+        section("Background", first=True)
+        self.chk_t = ttk.Checkbutton(
+            side, variable=self.opt_transp, text="Make background transparent", command=self.schedule_live_preview
         )
-        self.chk_c = tkinter.Checkbutton(
-            panel, variable=self.opt_crop, text="crop to image", command=self.schedule_live_preview
+        place(self.chk_t, pady=(0, P(2)))
+        self.chk_h = ttk.Checkbutton(
+            side, variable=self.opt_holes, text="Remove interior holes", command=self.schedule_live_preview
+        )
+        place(self.chk_h, padx=(P(28), 0), pady=(0, P(8)))
+        tol_row = ttk.Frame(side)
+        tol_row.columnconfigure(0, weight=1)
+        self.tol_label = ttk.Label(tol_row, text="Tolerance")
+        self.tol_label.grid(row=0, column=0, sticky="w")
+        self.tol_value = ttk.Label(tol_row, text=str(BG_TOL), style="Muted.TLabel")
+        self.tol_value.grid(row=0, column=1, sticky="e")
+        place(tol_row, sticky="ew")
+        self.tol_scale = ttk.Scale(side, from_=10, to=240, orient="horizontal", command=self._on_tol_drag)
+        self.tol_scale.set(BG_TOL)
+        place(self.tol_scale, sticky="ew", pady=(P(2), P(6)))
+        place(
+            ttk.Label(
+                side,
+                text="Removes colors matching the image border. Click the preview to pick a "
+                "background color (Shift+click adds more).",
+                style="Hint.TLabel",
+                wraplength=wrap,
+                justify="left",
+            )
         )
 
-        bin_row = tkinter.Frame(panel)
-        self.chk_b = tkinter.Checkbutton(
-            bin_row, variable=self.opt_bin, text="bin colors:", command=self.schedule_live_preview
+        section("Object outline")
+        place(
+            ttk.Label(
+                side,
+                text="Drag a loop around an object to cut it out. Right-click the preview to clear.",
+                style="Hint.TLabel",
+                wraplength=wrap,
+                justify="left",
+            ),
+            pady=(0, P(8)),
         )
-        self.spin_colors = tkinter.Spinbox(
-            bin_row,
-            from_=1,
-            to=16,
-            width=4,
-            textvariable=self.opt_colors,
+        self.btn_reset_seeds = ttk.Button(side, text="Clear picks & outline", command=self.clear_picks)
+        place(self.btn_reset_seeds)
+
+        section("Crop & colors")
+        self.chk_c = ttk.Checkbutton(
+            side, variable=self.opt_crop, text="Crop to content", command=self.schedule_live_preview
+        )
+        place(self.chk_c, pady=(0, P(6)))
+        bin_row = ttk.Frame(side)
+        self.chk_b = ttk.Checkbutton(bin_row, variable=self.opt_bin, text="Limit colors to", command=self.schedule_live_preview)
+        self.chk_b.grid(row=0, column=0, sticky="w")
+        self.spin_colors = ttk.Spinbox(bin_row, from_=1, to=16, width=4, textvariable=self.opt_colors)
+        self.spin_colors.grid(row=0, column=1, padx=(P(8), 0))
+        place(bin_row)
+        place(
+            ttk.Label(
+                side,
+                text="Flat colors, e.g. one per filament for 3D printing. SVG export always uses this count.",
+                style="Hint.TLabel",
+                wraplength=wrap,
+                justify="left",
+            ),
+            pady=(P(6), 0),
         )
         # Fires on arrow clicks and on every keystroke, so the preview always matches the export
         self.opt_colors.trace_add("write", lambda *_a: self.schedule_live_preview())
-        self.chk_b.pack(side="left")
-        self.spin_colors.pack(side="left", padx=(4, 0))
+        self.opt_transp.trace_add("write", lambda *_a: self._update_mode_widgets())
 
-        self.tol_label = tkinter.Label(panel, text="tolerance:")
-        self.tol_scale = tkinter.Scale(
-            panel,
-            from_=10,
-            to=240,
-            orient="horizontal",
-            variable=self.opt_tol,
-            length=180,
-            command=lambda _v: self.schedule_live_preview(),
+        section("Export")
+        self.btn = ttk.Button(side, text="Save PNG", style="Accent.TButton", command=self.apply)
+        place(self.btn, sticky="ew", pady=(0, P(6)))
+        self.btn_ico = ttk.Button(side, text="Export icon (.ico)", command=self.export_icon)
+        place(self.btn_ico, sticky="ew", pady=(0, P(6)))
+        self.btn_svg = ttk.Button(side, text="Export SVG (.svg)", command=self.export_svg)
+        place(self.btn_svg, sticky="ew")
+        place(
+            ttk.Label(side, text="Files are saved next to the original.", style="Hint.TLabel", wraplength=wrap),
+            pady=(P(6), 0),
         )
-        self.seed_info = tkinter.Label(
-            panel, text="tip: click image to pick bg\n(Shift+click add, right-click reset)", justify="left", fg="#555555"
-        )
-        self.btn_reset_seeds = tkinter.Button(panel, text="Reset picked bg", command=self.clear_seeds)
 
-        btn_row = tkinter.Frame(panel)
-        self.btn = tkinter.Button(btn_row, text="Apply (PNG)", command=self.apply)
-        self.btn_ico = tkinter.Button(btn_row, text="Export Icon (.ico)", command=self.export_icon)
-        self.btn_svg = tkinter.Button(btn_row, text="Export SVG (.svg)", command=self.export_svg)
-        self.btn.pack(side="left", padx=(0, 6))
-        self.btn_ico.pack(side="left", padx=(0, 6))
-        self.btn_svg.pack(side="left")
+        side.rowconfigure(row, weight=1)  # push the bottom row down
+        row += 1
+        bottom = ttk.Frame(side)
+        bottom.columnconfigure(0, weight=1)
+        self.btn_deps = ttk.Button(bottom, text="Dependencies…", command=self.show_dependencies)
+        self.btn_deps.grid(row=0, column=0, sticky="w")
+        self.btn_reset_all = ttk.Button(bottom, text="Reset all", command=self.reset_all)
+        self.btn_reset_all.grid(row=0, column=1, sticky="e")
+        place(bottom, sticky="ew")
 
-        self.chk_t.grid(row=0, sticky="w")
-        self.chk_h.grid(row=1, sticky="w", padx=(18, 0))
-        self.chk_c.grid(row=2, sticky="w")
-        bin_row.grid(row=3, sticky="w", pady=(2, 0))
-        self.tol_label.grid(row=4, sticky="w", pady=(10, 0))
-        self.tol_scale.grid(row=5, sticky="w")
-        self.seed_info.grid(row=6, sticky="w", pady=(8, 4))
-        self.btn_reset_seeds.grid(row=7, sticky="w", pady=(2, 4))
-        btn_row.grid(row=8, pady=(10, 0), sticky="w")
+        # ---- status bar ----
+        bar = ttk.Frame(root)
+        bar.grid(row=1, column=0, columnspan=3, sticky="ew")
+        bar.columnconfigure(0, weight=1)
+        ttk.Separator(bar).grid(row=0, column=0, columnspan=3, sticky="ew")
+        self.status = ttk.Label(bar, text="Open or drop an image to get started.", style="Status.TLabel", anchor="w")
+        self.status.grid(row=1, column=0, sticky="ew", padx=(P(16), P(8)), pady=P(6))
+        self.progress = ttk.Progressbar(bar, mode="indeterminate", length=P(140))
+        self.progress.grid(row=1, column=1, padx=P(8))
+        self.progress.grid_remove()
+        self.link = ttk.Label(bar, text="Show in folder", style="Link.TLabel", cursor="hand2")
+        self.link.grid(row=1, column=2, padx=(P(8), P(16)))
+        self.link.bind("<Button-1>", lambda _e: self.show_in_folder())
+        self.link.grid_remove()
 
-        self.status = tkinter.Label(
-            self.root,
-            text="Drop a picture on the box. Use Apply (PNG), Export Icon (.ico), or Export SVG (.svg).",
-            justify="left",
-        )
-        self.status.grid(row=1, column=0, columnspan=2, pady=(16, 8), sticky="n")
+        self._update_mode_widgets()
+        self._update_compare_state()
+        self._update_deps_button(announce=True)
 
-    def set_box(self, bw, bh):
-        self.bw, self.bh = bw, bh
-        if self.canvas is None:
-            self.canvas = tkinter.Canvas(self.root, width=bw, height=bh, cursor="crosshair")
-            self.canvas.grid(row=0, column=0, padx=24, pady=(56, 24), sticky="n")
-            self.canvas.create_rectangle(0, 0, bw, bh, fill="#F4F4F4", outline="#777777", width=2, tags="box")
-            self.canvas.create_text(bw // 2, bh - 18, text="drag a picture onto this box", fill="#999999", tags="hint")
-            self.canvas.bind("<Button-1>", self.on_canvas_click)
-            self.canvas.bind("<Button-3>", lambda _e: self.clear_seeds())
+    # --- dependencies -------------------------------------------------------------------------
+
+    def _update_deps_button(self, announce=False):
+        """Show how many optional packages are missing on the button; mention it once at startup."""
+        missing = missing_dependencies()
+        self.btn_deps.configure(text=f"Dependencies ({len(missing)} missing)" if missing else "Dependencies…")
+        if missing and announce:
+            names = ", ".join(d[1] for d in missing)
+            self.set_msg(f"Some features are unavailable ({names} not installed) — click Dependencies to install.")
+
+    def show_dependencies(self):
+        dlg = DependencyDialog(self.root, on_restart=self.restart)
+        self.root.wait_window(dlg.top)
+        try:
+            self._update_deps_button()
+        except tkinter.TclError:
+            pass  # the app restarted from the dialog and this window is gone
+
+    def restart(self):
+        """Restart after installing packages (the theme and imports are set up at startup)."""
+        if self._busy:
+            self.set_msg("Wait for the export to finish, then restart.")
+            return
+        restart_app()
+        self.root.destroy()
+
+    # --- canvas drawing ---------------------------------------------------------------------
+
+    def _apply_canvas_color(self):
+        try:
+            self.canvas.configure(background=self.palette["canvas"])
+        except tkinter.TclError:
+            pass  # window already closed
+
+    def on_canvas_resize(self, event):
+        self.bw, self.bh = max(1, event.width), max(1, event.height)
+        if self._resize_job is not None:
+            self.root.after_cancel(self._resize_job)
+        self._resize_job = self.root.after(60, self._redraw_after_resize)
+
+    def _redraw_after_resize(self):
+        self._resize_job = None
+        if self._comparing and self.source_rgba is not None:
+            self.show_image(self.source_rgba, None, overlay=False)
+        elif self.last_preview is not None:
+            self.show_image(self.last_preview, None)
         else:
-            self.canvas.configure(width=bw, height=bh)
-            self.canvas.coords("box", 0, 0, bw, bh)
-            self.canvas.coords("hint", bw // 2, bh - 18)
+            self.reset_canvas()
+        if self.canvas.find_withtag("drophint"):
+            self._draw_drop_hint()
 
     def reset_canvas(self):
-        """Back to the empty drop box (no picture loaded)."""
-        self.canvas.delete("preview")
+        """The empty state: app icon, 'Drop an image here', and the supported formats."""
+        c, pal, P = self.canvas, self.palette, self.px
+        c.delete("all")
         self.tkimg = None
-        if not self.canvas.find_withtag("hint"):
-            self.canvas.create_text(
-                self.bw // 2, self.bh - 18, text="drag a picture onto this box", fill="#999999", tags="hint"
-            )
-        self.canvas.itemconfigure("box", fill="#F4F4F4")
+        cx, cy = self.bw / 2, self.bh / 2
+        if self._empty_icon is None and APP_ICON_PNG.is_file():
+            try:
+                with Image.open(APP_ICON_PNG) as ic:
+                    self._empty_icon = ImageTk.PhotoImage(ic.convert("RGBA").resize((P(88), P(88)), Image.LANCZOS))
+            except Exception:
+                self._empty_icon = False
+        if self._empty_icon:
+            c.create_image(cx, cy - P(62), image=self._empty_icon, tags="empty")
+        base = tkinter.font.nametofont("TkDefaultFont").actual()
+        c.create_text(cx, cy + P(8), text="Drop an image here", fill=pal["text"],
+                      font=(base["family"], base["size"] + 4), tags="empty")
+        c.create_text(cx, cy + P(36), text="or click to open (Ctrl+O)", fill=pal["muted"],
+                      font=(base["family"], base["size"]), tags="empty")
+        fmts = "  ".join(e.lstrip(".").upper() for e in sorted(IMG_EXT) if e not in (".jpeg", ".tiff"))
+        c.create_text(cx, cy + P(62), text=fmts, fill=pal["muted"],
+                      font=(base["family"], max(7, base["size"] - 1)), tags="empty")
 
-    def fit_display(self, size):
-        w, h = size
-        s = min(self.CAP_W / w, self.CAP_H / h, 2.0)
-        bw = max(200, int(round(w * s)))
-        bh = max(180, int(round(h * s)))
-        if (bw, bh) != (self.bw, self.bh):
-            self.set_box(bw, bh)
-            self.root.geometry(f"{bw + 440}x{max(bh + 170, 560)}")
+    def _draw_drop_hint(self):
+        self.canvas.delete("drophint")
+        m = self.px(6)
+        self.canvas.create_rectangle(
+            m, m, self.bw - m, self.bh - m, outline=self.palette["accent"], width=self.px(2),
+            dash=(8, 6), tags="drophint",
+        )
 
     def set_msg(self, text):
         self.status.configure(text=text)
 
-    def show_image(self, pil_img, label):
+    def show_image(self, pil_img, label, overlay=True):
+        """Show a picture in the box. overlay=False skips the outline (e.g. for a hovered file)."""
         bw, bh = self.bw, self.bh
-        scale = min((bw - 8) / pil_img.width, (bh - 8) / pil_img.height, 3.0)
+        m = 2 * self.VIEW_MARGIN
+        scale = min(max(1, bw - m) / pil_img.width, max(1, bh - m) / pil_img.height, 3.0)
         w = max(1, int(round(pil_img.width * scale)))
         h = max(1, int(round(pil_img.height * scale)))
         self._disp_scale = scale
         self._disp_size = (w, h)
         small = pil_img.resize((w, h), Image.LANCZOS)
         if small.mode == "RGBA" and (np.asarray(small)[..., 3] < 255).any():
-            yy = np.arange(h)[:, None] // 6
-            xx = np.arange(w)[None, :] // 6
-            tile = np.where(((yy + xx) % 2).astype(bool), 204, 255).astype(np.uint8)
-            back = Image.fromarray(np.repeat(tile[:, :, None], 3, axis=2))
-            small = Image.alpha_composite(back.convert("RGBA"), small).convert("RGB")
+            r1, g1, b1, r2, g2, b2 = self.palette["check"]
+            cell = self.px(8)
+            yy = np.arange(h)[:, None] // cell
+            xx = np.arange(w)[None, :] // cell
+            odd = ((yy + xx) % 2).astype(bool)
+            tile = np.empty((h, w, 3), np.uint8)
+            tile[~odd] = (r1, g1, b1)
+            tile[odd] = (r2, g2, b2)
+            small = Image.alpha_composite(Image.fromarray(tile).convert("RGBA"), small).convert("RGB")
         photo = ImageTk.PhotoImage(small)
-        self.canvas.delete("preview")
-        self.canvas.delete("hint")
+        self.canvas.delete("preview", "empty", "lasso")
         self.canvas.create_image(bw // 2, bh // 2, image=photo, anchor="center", tags="preview")
+        self.canvas.tag_lower("preview")
         self.tkimg = photo
+        if overlay:
+            self._draw_lasso()
         if label:
-            self.status.configure(text=label)
+            self.set_msg(label)
 
-    def on_canvas_click(self, event):
-        if self.source_rgba is None:
-            return
+    # --- mapping between canvas pixels and full-resolution source pixels ---------------------
+
+    def _view_geometry(self):
+        """What the box shows: displayed size/offset, crop box, and icon padding (if an icon preview)."""
         src_w, src_h = self.source_rgba.size
         disp_w, disp_h = self._disp_size
-        x0 = (self.bw - disp_w) / 2.0
-        y0 = (self.bh - disp_h) / 2.0
-        rel_x = (event.x - x0) / max(1.0, float(disp_w))
-        rel_y = (event.y - y0) / max(1.0, float(disp_h))
-        if not (0.0 <= rel_x <= 1.0 and 0.0 <= rel_y <= 1.0):
-            return
-
+        ox = (self.bw - disp_w) / 2.0
+        oy = (self.bh - disp_h) / 2.0
         cx0, cy0, cx1, cy1 = self._crop_box or (0, 0, src_w, src_h)
-        cw = max(1, cx1 - cx0)
-        ch = max(1, cy1 - cy0)
-
+        cw, ch = max(1, cx1 - cx0), max(1, cy1 - cy0)
+        icon = None
         if self._is_icon_preview:
             icon_s = float(max(ICON_SIZES))
             sc = min(icon_s / cw, icon_s / ch)
-            nw = max(1.0, round(cw * sc))
-            nh = max(1.0, round(ch * sc))
-            pad_x = (icon_s - nw) / 2.0
-            pad_y = (icon_s - nh) / 2.0
-            px = rel_x * icon_s
-            py = rel_y * icon_s
-            if not (pad_x <= px <= pad_x + nw and pad_y <= py <= pad_y + nh):
-                return
-            rel_x = (px - pad_x) / nw
-            rel_y = (py - pad_y) / nh
+            nw, nh = max(1.0, round(cw * sc)), max(1.0, round(ch * sc))
+            icon = (icon_s, (icon_s - nw) / 2.0, (icon_s - nh) / 2.0, nw, nh)
+        return ox, oy, disp_w, disp_h, cx0, cy0, cw, ch, icon
 
-        ix = int(np.clip(round(cx0 + rel_x * (cw - 1)), 0, src_w - 1))
-        iy = int(np.clip(round(cy0 + rel_y * (ch - 1)), 0, src_h - 1))
+    def _canvas_to_source(self, x, y, clamp=False):
+        """Canvas point -> float source pixel, or None if outside the picture (unless clamp)."""
+        src_w, src_h = self.source_rgba.size
+        ox, oy, disp_w, disp_h, cx0, cy0, cw, ch, icon = self._view_geometry()
+        rel_x = (x - ox) / max(1.0, float(disp_w))
+        rel_y = (y - oy) / max(1.0, float(disp_h))
+        if clamp:
+            rel_x, rel_y = min(max(rel_x, 0.0), 1.0), min(max(rel_y, 0.0), 1.0)
+        elif not (0.0 <= rel_x <= 1.0 and 0.0 <= rel_y <= 1.0):
+            return None
+        if icon:
+            icon_s, pad_x, pad_y, nw, nh = icon
+            px, py = rel_x * icon_s, rel_y * icon_s
+            if clamp:
+                px, py = min(max(px, pad_x), pad_x + nw), min(max(py, pad_y), pad_y + nh)
+            elif not (pad_x <= px <= pad_x + nw and pad_y <= py <= pad_y + nh):
+                return None
+            rel_x, rel_y = (px - pad_x) / nw, (py - pad_y) / nh
+        sx = min(max(cx0 + rel_x * (cw - 1), 0.0), src_w - 1.0)
+        sy = min(max(cy0 + rel_y * (ch - 1), 0.0), src_h - 1.0)
+        return sx, sy
 
+    def _source_to_canvas(self, sx, sy):
+        """Inverse of _canvas_to_source (points may land outside the shown picture)."""
+        ox, oy, disp_w, disp_h, cx0, cy0, cw, ch, icon = self._view_geometry()
+        rel_x = (sx - cx0) / max(1.0, cw - 1.0)
+        rel_y = (sy - cy0) / max(1.0, ch - 1.0)
+        if icon:
+            icon_s, pad_x, pad_y, nw, nh = icon
+            rel_x, rel_y = (pad_x + rel_x * nw) / icon_s, (pad_y + rel_y * nh) / icon_s
+        return ox + rel_x * disp_w, oy + rel_y * disp_h
+
+    def _draw_lasso(self):
+        if not self.lasso or self.source_rgba is None:
+            return
+        flat = [c for p in self.lasso for c in self._source_to_canvas(*p)]
+        self.canvas.create_polygon(
+            *flat, outline=self.palette["outline"], fill="", width=self.px(2), dash=(6, 4), tags="lasso"
+        )
+
+    # --- mouse: drag = outline an object, click = pick background ------------------------------
+
+    def on_press(self, event):
+        self.canvas.focus_set()  # so Space (compare) is not swallowed by a focused button
+        if self.source_rgba is None:
+            self.open_dialog()
+            return
+        if self._comparing or self._busy:
+            return
+        self._drag = [(event.x, event.y)]
+        self._drag_far = False
+
+    def on_motion(self, event):
+        if not self._drag:
+            return
+        lx, ly = self._drag[-1]
+        if np.hypot(event.x - lx, event.y - ly) < 3:
+            return
+        self._drag.append((event.x, event.y))
+        sx, sy = self._drag[0]
+        if not self._drag_far and np.hypot(event.x - sx, event.y - sy) >= self.DRAG_MIN_PX:
+            self._drag_far = True
+        flat = [c for p in self._drag for c in p]
+        if self.canvas.find_withtag("lasso_live"):
+            self.canvas.coords("lasso_live", *flat)
+        else:
+            self.canvas.create_line(*flat, fill=self.palette["outline"], width=self.px(2), tags="lasso_live")
+
+    def cancel_drag(self):
+        """Escape: abandon an outline that is being drawn."""
+        if self._drag:
+            self._drag, self._drag_far = None, False
+            self.canvas.delete("lasso_live")
+            self.set_msg("Outline cancelled.")
+
+    def on_release(self, event):
+        pts, far = self._drag, self._drag_far
+        self._drag, self._drag_far = None, False
+        self.canvas.delete("lasso_live")
+        if not pts or self.source_rgba is None:
+            return
+        if not far:
+            self.pick_background(event)
+            return
+        pts.append((event.x, event.y))
+        src = []
+        for x, y in pts:
+            p = self._canvas_to_source(x, y, clamp=True)
+            if not src or np.hypot(p[0] - src[-1][0], p[1] - src[-1][1]) >= 2.0:
+                src.append(p)
+        if len(src) < 3:
+            self.set_msg("Outline too small — drag a loop around the object.")
+            self._draw_lasso()
+            return
+        self.lasso = src
+        self.opt_transp.set(True)
+        self.opt_crop.set(True)
+        self._update_mode_widgets()
+        self.update_live_preview()
+
+    def pick_background(self, event):
+        p = self._canvas_to_source(event.x, event.y)
+        if p is None:
+            return
+        src_w, src_h = self.source_rgba.size
+        ix = int(np.clip(round(p[0]), 0, src_w - 1))
+        iy = int(np.clip(round(p[1]), 0, src_h - 1))
         shift_held = bool(event.state & 0x0001)
         if shift_held:
             self.seeds.append((ix, iy))
@@ -1122,11 +2022,80 @@ class App:
             self.opt_transp.set(True)
         self.update_live_preview()
 
-    def clear_seeds(self):
-        if not self.seeds:
+    # --- options ------------------------------------------------------------------------------
+
+    def _on_tol_drag(self, value):
+        v = int(round(float(value)))
+        self.tol_value.configure(text=str(v))
+        if v != self.opt_tol.get():
+            self.opt_tol.set(v)
+            self.schedule_live_preview()
+
+    def _set_tolerance(self, v):
+        self.opt_tol.set(int(v))
+        self.tol_scale.set(int(v))
+        self.tol_value.configure(text=str(int(v)))
+
+    def _update_mode_widgets(self):
+        """Grey out what does not apply: tolerance in outline mode, holes without transparency."""
+        self.tol_scale.state(["disabled"] if self.lasso else ["!disabled"])
+        muted = "Muted.TLabel" if self.lasso else "TLabel"
+        self.tol_label.configure(style=muted)
+        self.chk_h.state(["!disabled"] if self.opt_transp.get() else ["disabled"])
+
+    def _update_compare_state(self):
+        can = self.source_rgba is not None and self.last_preview is not self.source_rgba
+        self.btn_compare.state(["!disabled"] if can else ["disabled"])
+
+    def clear_picks(self):
+        if not self.seeds and not self.lasso:
             return
         self.seeds = []
+        self.lasso = []
+        self.canvas.delete("lasso")
+        self._update_mode_widgets()
         self.update_live_preview()
+
+    def reset_all(self):
+        """Back to the original picture: no outline or picks, all options off, defaults restored."""
+        self.seeds = []
+        self.lasso = []
+        self.canvas.delete("lasso")
+        for var in (self.opt_transp, self.opt_holes, self.opt_crop, self.opt_bin):
+            var.set(False)
+        self._set_tolerance(BG_TOL)
+        self.opt_colors.set(DEFAULT_SVG_COLORS)  # its trace schedules a preview; cancelled below
+        self._update_mode_widgets()
+        self._hide_link()
+        if self._preview_job is not None:
+            self.root.after_cancel(self._preview_job)
+            self._preview_job = None
+        if self.source_rgba is None:
+            return
+        self._crop_box = (0, 0, self.source_rgba.width, self.source_rgba.height)
+        self._is_icon_preview = False
+        self.last_preview = self.source_rgba
+        self.last_label = "Reset to the original image."
+        self.show_image(self.source_rgba, self.last_label)
+        self._update_compare_state()
+
+    # --- hold to compare ------------------------------------------------------------------------
+
+    def compare_start(self, event=None):
+        if event is not None and isinstance(event.widget, (ttk.Spinbox, tkinter.Entry)):
+            return  # typing in the color count box
+        if self._comparing or self.btn_compare.instate(["disabled"]) or self._drag:
+            return
+        self._comparing = True
+        self.show_image(self.source_rgba, "Showing the original — release to return.", overlay=False)
+
+    def compare_end(self, event=None):
+        if not self._comparing:
+            return
+        self._comparing = False
+        self.show_image(self.last_preview, self.last_label)
+
+    # --- live preview ---------------------------------------------------------------------------
 
     def schedule_live_preview(self):
         if self.source_rgba is None:
@@ -1142,6 +2111,7 @@ class App:
         self._preview_job = None
         if self.source_rgba is None:
             return
+        self._comparing = False
         do_t = self.opt_transp.get()
         do_h = self.opt_holes.get()
         do_c = self.opt_crop.get()
@@ -1152,11 +2122,13 @@ class App:
             self._crop_box = (0, 0, self.source_rgba.width, self.source_rgba.height)
             self._is_icon_preview = False
             self.last_preview = self.source_rgba
-            self.last_label = f"preview: {self.current_path.name} (original)"
+            self.last_label = "Original image. Choose options on the right, or drag around an object."
             self.show_image(self.source_rgba, self.last_label)
+            self._update_compare_state()
             return
         s = self.preview_scale
         seeds = [(x * s, y * s) for x, y in self.seeds] or None
+        lasso = [(x * s, y * s) for x, y in self.lasso] or None
         try:
             _, preview, notes, crop_box = render_preview(
                 self.preview_src,
@@ -1168,9 +2140,10 @@ class App:
                 seeds=seeds,
                 bin_colors=do_b,
                 n_colors=n_colors,
+                lasso=lasso,
             )
         except Exception as exc:  # pythonw has no console: surface the error in the UI
-            self.set_msg(f"preview error: {exc}")
+            self.set_msg(f"Preview error: {exc}")
             return
         # Click mapping works in full-resolution source coordinates
         src_w, src_h = self.source_rgba.size
@@ -1182,82 +2155,43 @@ class App:
             min(src_h, int(np.ceil(y1 / s))),
         )
         self._is_icon_preview = False
-        seed_txt = f", {len(self.seeds)} bg pick(s)" if self.seeds else ""
+        if s != 1.0:  # the preview ran on a downscaled copy: report the crop in real image pixels
+            cx0, cy0, cx1, cy1 = self._crop_box
+            notes = [f"cropped to {cx1 - cx0}x{cy1 - cy0}" if n.startswith("cropped to") else n for n in notes]
+        if self.seeds:
+            notes.append(f"{len(self.seeds)} background pick(s)")
         if do_b and not colors_ok:
             notes.append(f"invalid color count, using {n_colors}")
-        note_str = "; ".join(notes) if notes else "ready"
+        if do_t and not self.lasso:
+            notes.append(f"tolerance {tol}")
         self.last_preview = preview
-        self.last_label = f"preview: {self.current_path.name} ({note_str}, tol={tol}{seed_txt}) - click Apply/Export to save"
+        self.last_label = "Preview: " + (" · ".join(notes) if notes else "ready")
         self.show_image(preview, self.last_label)
+        self._update_compare_state()
 
-    def dropped_paths(self, event):
-        raw = getattr(event, "data", None)
-        if not raw:
-            return []
+    # --- opening files --------------------------------------------------------------------------
+
+    def open_dialog(self):
+        if self._busy:
+            return
+        pattern = " ".join(f"*{e}" for e in sorted(IMG_EXT))
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Open image",
+            filetypes=[("Images", pattern), ("All files", "*.*")],
+            initialdir=str(self.current_path.parent) if self.current_path else None,
+        )
+        if not path:
+            return
         try:
-            return list(self.root.tk.splitlist(raw))
-        except Exception:
-            return [raw]
+            rgba = load_rgba(path)
+        except Exception as exc:
+            self.set_msg(f"Could not open {Path(path).name}: {exc}")
+            return
+        self.load_picture(Path(path), rgba)
 
-    def on_hover(self, event):
-        self.canvas.itemconfigure("box", fill="#FFF8D8")
-        paths = self.dropped_paths(event)
-        p = paths[0] if paths else None
-        if p and is_image_file(p) and p != self.hover_path:
-            self.hover_path = p
-            try:
-                rgba = load_rgba(p)
-                self.fit_display(rgba.size)
-                self.canvas.itemconfigure("box", fill="#FFF8D8")
-                self.show_image(rgba, f"hovering: {Path(p).name}")
-            except Exception:
-                pass
-        return COPY
-
-    def on_leave(self, event):
-        had_hover = self.hover_path is not None
-        self.hover_path = None
-        if self.current_path is None:
-            self.reset_canvas()
-            if had_hover:
-                self.set_msg("Drop a picture on the box. Use Apply (PNG), Export Icon (.ico), or Export SVG (.svg).")
-        else:
-            if had_hover and self.last_preview is not None:
-                self.fit_display(self.last_preview.size)
-                self.show_image(self.last_preview, self.last_label)
-            self.canvas.itemconfigure("box", fill="#EAF4E4")
-        return COPY
-
-    def _restore_after_failed_drop(self, msg):
-        if self.current_path is None:
-            self.reset_canvas()
-        elif self.last_preview is not None:
-            self.fit_display(self.last_preview.size)
-            self.show_image(self.last_preview, None)
-            self.canvas.itemconfigure("box", fill="#EAF4E4")
-        self.set_msg(msg)
-
-    def on_drop(self, event):
-        self.hover_path = None
-        paths = self.dropped_paths(event)
-        images = [p for p in paths if is_image_file(p)]
-        if not images:
-            self._restore_after_failed_drop("not an image file - drop a .png, .jpg, .bmp, .gif, .tif, .webp or .ico")
-            return COPY
-        # One picture at a time: use the first one that opens
-        path = rgba = None
-        failed = []
-        for p in images:
-            try:
-                rgba = load_rgba(p)
-                path = Path(p)
-                break
-            except Exception:
-                failed.append(Path(p).name)
-        if path is None:
-            self._restore_after_failed_drop(f"could not open: {', '.join(failed)}")
-            return COPY
-
+    def load_picture(self, path, rgba, extra_msg=""):
+        """Make `rgba` (loaded from `path`) the current picture and show it, keeping the options."""
         self.current_path = path
         self.source_rgba = rgba
         s = min(1.0, PREVIEW_MAX_SIDE / max(rgba.size))
@@ -1270,32 +2204,117 @@ class App:
             self.preview_src = rgba
             self.preview_scale = 1.0
         self.seeds = []
+        self.lasso = []
+        self._comparing = False
+        self._update_mode_widgets()
+        self._hide_link()
         self._crop_box = (0, 0, rgba.width, rgba.height)
         self._is_icon_preview = False
-        self.fit_display(rgba.size)
-        do_t, do_c, do_b = self.opt_transp.get(), self.opt_crop.get(), self.opt_bin.get()
-        self.canvas.itemconfigure("box", fill="#EAF4E4")
+        self.root.title(f"{APP_NAME} — {path.name}")
+        self.file_label.configure(text=path.name)
+        self.info_label.configure(text=f"{rgba.width} × {rgba.height} px")
+        self.canvas.delete("drophint")
         self.last_preview = rgba
-        self.last_label = f"dropped: {path.name}"
+        self.last_label = "Original image. Choose options on the right, or drag around an object."
         self.show_image(rgba, self.last_label)
-        skipped = len(paths) - 1 - len(failed)
-        extra = f" ({skipped} other file(s) ignored - one picture at a time)" if skipped > 0 else ""
-        if do_t or do_c or do_b:
+        if self.opt_transp.get() or self.opt_crop.get() or self.opt_bin.get():
             self.update_live_preview()
-            if extra:
-                self.last_label += extra
-                self.set_msg(self.last_label)
-        else:
-            self.last_label = f"dropped: {path.name} - tick options, click bg, or click Apply / Export{extra}"
-            self.set_msg(self.last_label)
+        self._update_compare_state()
+        if extra_msg:
+            self.set_msg(f"{self.status.cget('text')} {extra_msg}")
+
+    def dropped_paths(self, event):
+        raw = getattr(event, "data", None)
+        if not raw:
+            return []
+        try:
+            return list(self.root.tk.splitlist(raw))
+        except Exception:
+            return [raw]
+
+    def on_hover(self, event):
+        if not self.canvas.find_withtag("drophint"):
+            self._draw_drop_hint()
+        paths = self.dropped_paths(event)
+        p = paths[0] if paths else None
+        if p and is_image_file(p) and p != self.hover_path:
+            self.hover_path = p
+            try:
+                rgba = load_rgba(p)
+                self.show_image(rgba, f"Drop to open {Path(p).name}", overlay=False)
+                self.canvas.tag_raise("drophint")
+            except Exception:
+                pass
         return COPY
+
+    def _restore_view(self):
+        """After a drag-and-drop hover ends: back to what was shown before."""
+        self.canvas.delete("drophint")
+        if self.current_path is None:
+            self.reset_canvas()
+        elif self.last_preview is not None:
+            self.show_image(self.last_preview, None)
+
+    def on_leave(self, event):
+        had_hover = self.hover_path is not None
+        self.hover_path = None
+        self._restore_view()
+        if had_hover:
+            self.set_msg(self.last_label or "Open or drop an image to get started.")
+        return COPY
+
+    def on_drop(self, event):
+        self.hover_path = None
+        paths = self.dropped_paths(event)
+        images = [p for p in paths if is_image_file(p)]
+        if not images:
+            self._restore_view()
+            self.set_msg("Not an image file. Supported: PNG, JPG, BMP, GIF, TIF, WEBP, ICO.")
+            return COPY
+        # One picture at a time: use the first one that opens
+        path = rgba = None
+        failed = []
+        for p in images:
+            try:
+                rgba = load_rgba(p)
+                path = Path(p)
+                break
+            except Exception:
+                failed.append(Path(p).name)
+        if path is None:
+            self._restore_view()
+            self.set_msg(f"Could not open {', '.join(failed)}.")
+            return COPY
+        skipped = len(paths) - 1 - len(failed)
+        extra = f"({skipped} other file(s) ignored — one image at a time.)" if skipped > 0 else ""
+        self.load_picture(path, rgba, extra_msg=extra)
+        return COPY
+
+    # --- exporting ------------------------------------------------------------------------------
 
     def _set_busy(self, busy):
         self._busy = busy
-        state = "disabled" if busy else "normal"
-        for b in (self.btn, self.btn_ico, self.btn_svg):
-            b.configure(state=state)
+        for b in (self.btn, self.btn_ico, self.btn_svg, self.btn_open):
+            b.state(["disabled"] if busy else ["!disabled"])
+        if busy:
+            self._hide_link()
+            self.progress.grid()
+            self.progress.start(12)
+        else:
+            self.progress.stop()
+            self.progress.grid_remove()
         self.root.configure(cursor="watch" if busy else "")
+
+    def _hide_link(self):
+        self.link.grid_remove()
+
+    def show_in_folder(self):
+        if self.last_output is None:
+            return
+        try:
+            reveal_in_folder(self.last_output)
+        except Exception as exc:
+            self.set_msg(f"Could not open the folder: {exc}")
 
     def _run_process(self, do_t, do_c, do_icon=False, do_svg=False, bin_colors=False):
         """Export on a worker thread so the window stays responsive; results come back via a queue.
@@ -1315,6 +2334,7 @@ class App:
             do_svg=do_svg,
             bin_colors=bin_colors,
             n_colors=n_colors,
+            lasso=list(self.lasso) or None,
         )
         results = queue.Queue()
 
@@ -1325,8 +2345,9 @@ class App:
                 results.put(("error", exc))
 
         kind = "SVG" if do_svg else "icon" if do_icon else "PNG"
+        self._comparing = False
         self._set_busy(True)
-        self.set_msg(f"exporting {kind} for {path.name}...")
+        self.set_msg(f"Exporting {kind}…")
         threading.Thread(target=work, name="quickimage-export", daemon=True).start()
         self.root.after(50, self._poll_export, results, path, bool(do_icon))
 
@@ -1338,39 +2359,45 @@ class App:
             return
         self._set_busy(False)
         if kind == "error":
-            self.set_msg(f"error: {value}")
+            self.set_msg(f"Export failed: {value}")
             return
         out, note, preview, crop_box = value
-        label = f"{path.name} -> {out.name}: {note}"
-        if path != self.current_path:  # another picture was dropped meanwhile: don't replace its preview
-            self.set_msg(f"saved {label}")
+        self.last_output = out
+        self.link.grid()
+        label = f"Saved {out.name} · {note.replace('; ', ' · ')}"
+        if path != self.current_path:  # another picture was opened meanwhile: don't replace its preview
+            self.set_msg(label)
             return
         self._crop_box = crop_box
         self._is_icon_preview = do_icon
         self.last_preview = preview
         self.last_label = label
         self.show_image(preview, self.last_label)
+        self._update_compare_state()
+
+    def _need_picture(self):
+        if self.current_path is None:
+            self.set_msg("Open or drop an image first.")
+            return True
+        return False
 
     def apply(self):
-        if self.current_path is None:
-            self.set_msg("no picture dropped yet")
+        if self._need_picture():
             return
         do_t, do_c, do_b = self.opt_transp.get(), self.opt_crop.get(), self.opt_bin.get()
         if not (do_t or do_c or do_b):
-            self.set_msg("no options ticked")
+            self.set_msg("Nothing to save yet — choose at least one option on the right.")
             return
         self._run_process(do_t, do_c, do_icon=False, do_svg=False, bin_colors=do_b)
 
     def export_icon(self):
-        if self.current_path is None:
-            self.set_msg("no picture dropped yet")
+        if self._need_picture():
             return
         do_t, do_c, do_b = self.opt_transp.get(), self.opt_crop.get(), self.opt_bin.get()
         self._run_process(do_t, do_c, do_icon=True, do_svg=False, bin_colors=do_b)
 
     def export_svg(self):
-        if self.current_path is None:
-            self.set_msg("no picture dropped yet")
+        if self._need_picture():
             return
         do_t, do_c = self.opt_transp.get(), self.opt_crop.get()
         self._run_process(do_t, do_c, do_icon=False, do_svg=True, bin_colors=True)

@@ -2,3 +2,6 @@ numpy
 pillow>=9.1
 scipy
 tkinterdnd2
+opencv-python-headless
+sv-ttk
+darkdetect
