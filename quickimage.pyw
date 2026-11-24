@@ -379,9 +379,12 @@ def _startup_missing_packages(exc):
         print(f"{APP_NAME} could not start: {exc}\nInstall the packages in requirements.txt.", file=sys.stderr)
 
 
+import io
+import tempfile
+
 try:
     import numpy as np
-    from PIL import Image, ImageDraw, ImageOps, ImageTk
+    from PIL import Image, ImageDraw, ImageGrab, ImageOps, ImageTk
     from scipy.ndimage import (
         binary_dilation,
         binary_erosion,
@@ -925,6 +928,110 @@ def _mask_bbox(fg):
     return (int(cols[0]), int(rows[0]), int(cols[-1]) + 1, int(rows[-1]) + 1)
 
 
+def apply_crop_options(im, pad_px=0, square=False):
+    """Add transparent margin (`pad_px` on each side) and/or center on a 1:1 square canvas."""
+    pad = max(0, int(round(pad_px)))
+    w, h = im.size
+    nw, nh = w + 2 * pad, h + 2 * pad
+    if square:
+        side = max(nw, nh)
+        nw, nh = side, side
+    if (nw, nh) == (w, h):
+        return im
+    rgba = im.convert("RGBA")
+    canvas = Image.new("RGBA", (nw, nh), (0, 0, 0, 0))
+    canvas.paste(rgba, ((nw - w) // 2, (nh - h) // 2))
+    return canvas
+
+
+def copy_image_to_clipboard(im):
+    """Copy a PIL Image to the system clipboard (CF_DIB + PNG on Windows). Returns True on success."""
+    rgba = im.convert("RGBA")
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # Composite onto white for apps that only read CF_DIB (24-bit BMP), and also register "PNG"
+        # format for apps that support full RGBA transparency (Word, PowerPoint, browsers, etc.).
+        white = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        flat = Image.alpha_composite(white, rgba).convert("RGB")
+        bmp_buf = io.BytesIO()
+        flat.save(bmp_buf, "BMP")
+        dib_bytes = bmp_buf.getvalue()[14:]  # strip 14-byte BITMAPFILEHEADER
+
+        png_buf = io.BytesIO()
+        rgba.save(png_buf, "PNG")
+        png_bytes = png_buf.getvalue()
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+        GMEM_MOVEABLE = 0x0002
+        CF_DIB = 8
+
+        kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+        kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+        kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalLock.restype = ctypes.c_void_p
+        kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+        kernel32.GlobalUnlock.restype = wintypes.BOOL
+        kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+        user32.OpenClipboard.argtypes = [wintypes.HWND]
+        user32.OpenClipboard.restype = wintypes.BOOL
+        user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+        user32.SetClipboardData.restype = wintypes.HANDLE
+        user32.RegisterClipboardFormatW.argtypes = [wintypes.LPCWSTR]
+        user32.RegisterClipboardFormatW.restype = wintypes.UINT
+
+        def _put_Clip(fmt_id, raw):
+            hmem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(raw))
+            if not hmem:
+                return False
+            ptr = kernel32.GlobalLock(hmem)
+            if not ptr:
+                kernel32.GlobalFree(hmem)
+                return False
+            ctypes.memmove(ptr, raw, len(raw))
+            kernel32.GlobalUnlock(hmem)
+            if not user32.SetClipboardData(fmt_id, hmem):
+                kernel32.GlobalFree(hmem)
+                return False
+            return True
+
+        if not user32.OpenClipboard(None):
+            return False
+        try:
+            user32.EmptyClipboard()
+            ok = _put_Clip(CF_DIB, dib_bytes)
+            cf_png = user32.RegisterClipboardFormatW("PNG")
+            if cf_png:
+                _put_Clip(cf_png, png_bytes)
+            return bool(ok)
+        finally:
+            user32.CloseClipboard()
+    except Exception:
+        return False
+
+
+def grab_clipboard_image():
+    """Return `(path_or_none, rgba_image)` from the system clipboard, or `(None, None)` if empty."""
+    try:
+        clip = ImageGrab.grabclipboard()
+    except Exception:
+        return None, None
+    if isinstance(clip, Image.Image):
+        return None, ImageOps.exif_transpose(clip).convert("RGBA")
+    if isinstance(clip, (list, tuple)):
+        for item in clip:
+            if isinstance(item, (str, Path)) and is_image_file(item):
+                try:
+                    return Path(item), load_rgba(item)
+                except Exception:
+                    continue
+    return None, None
+
+
 def next_save_path(path, ext=".png"):
     out = path.with_name(path.stem + f"_icon{ext}")
     n = 2
@@ -1350,6 +1457,8 @@ def render_preview(
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
     use_border=True,
+    crop_pad=0,
+    square_canvas=False,
 ):
     """Run transparency/crop/binning/icon steps in-memory without writing files.
 
@@ -1380,8 +1489,14 @@ def render_preview(
             crop_box = box
             im = im.crop(box)
             notes.append(f"cropped to {box[2]-box[0]}x{box[3]-box[1]}")
-        else:
+        elif not (crop_pad > 0 or square_canvas):
             notes.append("nothing to crop")
+    if crop_pad > 0 or square_canvas:
+        im = apply_crop_options(im, pad_px=crop_pad, square=square_canvas)
+        if crop_pad > 0:
+            notes.append(f"pad {int(round(crop_pad))}px")
+        if square_canvas:
+            notes.append(f"1:1 ({im.width}x{im.height})")
     if bin_colors:
         im, palette = quantize_foreground_colors(im, n_colors=n_colors, keep_alpha=True)
         notes.append(f"{len(palette)} color(s)")
@@ -1402,14 +1517,19 @@ def _process_with_preview(
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
     use_border=True,
+    do_webp=False,
+    out_path=None,
+    crop_pad=0,
+    square_canvas=False,
+    source_im=None,
 ):
     path = Path(path)
-    im = load_rgba(path)
+    im = source_im.copy() if source_im is not None else load_rgba(path)
     im, preview, notes, crop_box = render_preview(
         im,
         do_transp,
         do_crop,
-        do_icon=do_icon and not do_svg,
+        do_icon=do_icon and not do_svg and not do_webp,
         tol=tol,
         remove_holes=remove_holes,
         seeds=seeds,
@@ -1417,20 +1537,26 @@ def _process_with_preview(
         n_colors=n_colors,
         lasso=lasso,
         use_border=use_border,
+        crop_pad=crop_pad,
+        square_canvas=square_canvas,
     )
     if do_svg:
         binned, palette = quantize_foreground_colors(im, n_colors=n_colors)
         notes.append(f"{len(palette)} color(s)")
-        out = next_save_path(path, ".svg")
+        out = Path(out_path) if out_path else next_save_path(path, ".svg")
         out.write_text(binned_to_svg(binned, palette), encoding="utf-8")
         notes.append("svg")
         preview = binned
     elif do_icon:
-        out = next_save_path(path, ".ico")
+        out = Path(out_path) if out_path else next_save_path(path, ".ico")
         save_ico(im, out)
         notes.append(f"ico ({','.join(str(s) for s in ICON_SIZES)}px)")
+    elif do_webp:
+        out = Path(out_path) if out_path else next_save_path(path, ".webp")
+        im.save(out, "WEBP", lossless=True, quality=100)
+        notes.append("webp")
     else:
-        out = next_save_path(path, ".png")
+        out = Path(out_path) if out_path else next_save_path(path, ".png")
         im.save(out, "PNG")
     return out, ("; ".join(notes) if notes else "saved"), preview, crop_box
 
@@ -1448,6 +1574,10 @@ def process(
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
     use_border=True,
+    do_webp=False,
+    out_path=None,
+    crop_pad=0,
+    square_canvas=False,
 ):
     out, note, _, _ = _process_with_preview(
         path,
@@ -1462,6 +1592,10 @@ def process(
         n_colors=n_colors,
         lasso=lasso,
         use_border=use_border,
+        do_webp=do_webp,
+        out_path=out_path,
+        crop_pad=crop_pad,
+        square_canvas=square_canvas,
     )
     return out, note
 
@@ -1561,8 +1695,16 @@ class App:
         self.root.minsize(self.px(900), self.px(600))
         self.root.bind("<Escape>", lambda _e: self.cancel_drag())
         self.root.bind("<Control-o>", lambda _e: self.open_dialog())
+        self.root.bind("<Control-v>", self.paste_clipboard)
+        self.root.bind("<Control-V>", self.paste_clipboard)
+        self.root.bind("<Control-c>", self.copy_clipboard)
+        self.root.bind("<Control-C>", self.copy_clipboard)
         self.root.bind("<Control-z>", self.undo)
         self.root.bind("<Control-Z>", self.undo)
+        self.root.bind("<Control-y>", self.redo)
+        self.root.bind("<Control-Y>", self.redo)
+        self.root.bind("<Control-Shift-Z>", self.redo)
+        self.root.bind("<Control-Shift-z>", self.redo)
         self.root.bind("<KeyPress-space>", self.compare_start)
         self.root.bind("<KeyRelease-space>", self.compare_end)
 
@@ -1581,6 +1723,7 @@ class App:
         self.seeds = []
         self.lasso = []  # outline around one object, in full-resolution source pixels
         self._history = []  # stack of (seeds, lasso) snapshots for Ctrl+Z undo
+        self._redo_stack = []  # stack of (seeds, lasso) snapshots for Ctrl+Y / Ctrl+Shift+Z redo
         self._drag = None  # canvas points of the outline being drawn
         self._drag_far = False  # the press moved enough to be a drag, not a click
         self._preview_job = None
@@ -1603,6 +1746,13 @@ class App:
             return max(1, min(16, int(self.opt_colors.get()))), True
         except (tkinter.TclError, ValueError):
             return DEFAULT_SVG_COLORS, False
+
+    def _get_crop_pad(self):
+        """Return crop padding in pixels (0..256). Invalid text falls back to 0."""
+        try:
+            return max(0, min(256, int(self.opt_pad.get())))
+        except (tkinter.TclError, ValueError):
+            return 0
 
     # --- layout -----------------------------------------------------------------------------
 
@@ -1633,6 +1783,8 @@ class App:
         self.opt_mode = tkinter.StringVar(value="color")
         self.opt_holes = tkinter.BooleanVar(value=False)
         self.opt_crop = tkinter.BooleanVar(value=False)
+        self.opt_pad = tkinter.IntVar(value=0)
+        self.opt_square = tkinter.BooleanVar(value=False)
         self.opt_bin = tkinter.BooleanVar(value=False)
         self.opt_colors = tkinter.IntVar(value=DEFAULT_SVG_COLORS)
         self.opt_tol = tkinter.IntVar(value=BG_TOL)
@@ -1645,15 +1797,19 @@ class App:
 
         header = ttk.Frame(main)
         header.grid(row=0, column=0, sticky="ew", pady=(0, P(10)))
-        header.columnconfigure(2, weight=1)
+        header.columnconfigure(4, weight=1)
         self.btn_open = ttk.Button(header, text="Open…", command=self.open_dialog)
-        self.btn_open.grid(row=0, column=0, padx=(0, P(12)))
+        self.btn_open.grid(row=0, column=0, padx=(0, P(6)))
+        self.btn_paste = ttk.Button(header, text="Paste", command=self.paste_clipboard)
+        self.btn_paste.grid(row=0, column=1, padx=(0, P(6)))
+        self.btn_copy = ttk.Button(header, text="Copy", command=self.copy_clipboard)
+        self.btn_copy.grid(row=0, column=2, padx=(0, P(12)))
         self.file_label = ttk.Label(header, text="No image", style="Title.TLabel")
-        self.file_label.grid(row=0, column=1, sticky="w")
+        self.file_label.grid(row=0, column=3, sticky="w")
         self.info_label = ttk.Label(header, text="", style="Muted.TLabel")
-        self.info_label.grid(row=0, column=2, sticky="w", padx=(P(10), 0))
+        self.info_label.grid(row=0, column=4, sticky="w", padx=(P(10), 0))
         self.btn_compare = ttk.Button(header, text="Hold to compare")
-        self.btn_compare.grid(row=0, column=3, sticky="e")
+        self.btn_compare.grid(row=0, column=5, sticky="e")
         self.btn_compare.bind("<ButtonPress-1>", self.compare_start)
         self.btn_compare.bind("<ButtonRelease-1>", self.compare_end)
 
@@ -1740,7 +1896,18 @@ class App:
         self.chk_c = ttk.Checkbutton(
             side, variable=self.opt_crop, text="Crop to content", command=self.schedule_live_preview
         )
-        place(self.chk_c, pady=(0, P(6)))
+        place(self.chk_c, pady=(0, P(4)))
+        crop_opts = ttk.Frame(side)
+        self.chk_square = ttk.Checkbutton(
+            crop_opts, variable=self.opt_square, text="Square (1:1)", command=self.schedule_live_preview
+        )
+        self.chk_square.grid(row=0, column=0, sticky="w")
+        ttk.Label(crop_opts, text="Pad (px)").grid(row=0, column=1, padx=(P(10), P(4)))
+        self.spin_pad = ttk.Spinbox(crop_opts, from_=0, to=256, width=4, textvariable=self.opt_pad)
+        self.spin_pad.grid(row=0, column=2)
+        place(crop_opts, pady=(0, P(6)))
+        self.opt_pad.trace_add("write", lambda *_a: self.schedule_live_preview())
+
         bin_row = ttk.Frame(side)
         self.chk_b = ttk.Checkbutton(bin_row, variable=self.opt_bin, text="Limit colors to", command=self.schedule_live_preview)
         self.chk_b.grid(row=0, column=0, sticky="w")
@@ -1762,13 +1929,24 @@ class App:
 
         section("Export")
         self.btn = ttk.Button(side, text="Save PNG", style="Accent.TButton", command=self.apply)
+        self.btn.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.apply))
         place(self.btn, sticky="ew", pady=(0, P(6)))
+        self.btn_webp = ttk.Button(side, text="Save WebP (.webp)", command=self.export_webp)
+        self.btn_webp.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_webp))
+        place(self.btn_webp, sticky="ew", pady=(0, P(6)))
         self.btn_ico = ttk.Button(side, text="Export icon (.ico)", command=self.export_icon)
+        self.btn_ico.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_icon))
         place(self.btn_ico, sticky="ew", pady=(0, P(6)))
         self.btn_svg = ttk.Button(side, text="Export SVG (.svg)", command=self.export_svg)
+        self.btn_svg.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_svg))
         place(self.btn_svg, sticky="ew")
         place(
-            ttk.Label(side, text="Files are saved next to the original.", style="Hint.TLabel", wraplength=wrap),
+            ttk.Label(
+                side,
+                text="Files are saved next to the original (Shift-click to Save As…).",
+                style="Hint.TLabel",
+                wraplength=wrap,
+            ),
             pady=(P(6), 0),
         )
 
@@ -1978,6 +2156,7 @@ class App:
 
     def _push_history(self):
         self._history.append((list(self.seeds), list(self.lasso)))
+        self._redo_stack.clear()
 
     def undo(self, event=None):
         """Ctrl+Z: undo the last color click or outline action one step at a time."""
@@ -1988,7 +2167,23 @@ class App:
         if not self._history:
             self.set_msg("Nothing to undo.")
             return
+        self._redo_stack.append((list(self.seeds), list(self.lasso)))
         self.seeds, self.lasso = self._history.pop()
+        self.canvas.delete("lasso")
+        self._update_mode_widgets()
+        self.update_live_preview()
+
+    def redo(self, event=None):
+        """Ctrl+Y / Ctrl+Shift+Z: redo the most recently undone color click or outline action."""
+        if event is not None and isinstance(event.widget, (ttk.Spinbox, tkinter.Entry)):
+            return
+        if self._busy or self._drag:
+            return
+        if not self._redo_stack:
+            self.set_msg("Nothing to redo.")
+            return
+        self._history.append((list(self.seeds), list(self.lasso)))
+        self.seeds, self.lasso = self._redo_stack.pop()
         self.canvas.delete("lasso")
         self._update_mode_widgets()
         self.update_live_preview()
@@ -2119,6 +2314,9 @@ class App:
     def _update_compare_state(self):
         can = self.source_rgba is not None and self.last_preview is not self.source_rgba
         self.btn_compare.state(["!disabled"] if can else ["disabled"])
+        has_img = self.source_rgba is not None
+        if hasattr(self, "btn_copy"):
+            self.btn_copy.state(["!disabled"] if has_img else ["disabled"])
 
     def clear_picks(self):
         if not self.seeds and not self.lasso:
@@ -2135,10 +2333,12 @@ class App:
         self.seeds = []
         self.lasso = []
         self._history = []
+        self._redo_stack = []
         self.canvas.delete("lasso")
         self.opt_mode.set("color")
-        for var in (self.opt_holes, self.opt_crop, self.opt_bin):
+        for var in (self.opt_holes, self.opt_crop, self.opt_square, self.opt_bin):
             var.set(False)
+        self.opt_pad.set(0)
         self._set_tolerance(BG_TOL)
         self.opt_colors.set(DEFAULT_SVG_COLORS)  # its trace schedules a preview; cancelled below
         self._update_mode_widgets()
@@ -2191,10 +2391,12 @@ class App:
         do_t, raw_seeds, raw_lasso, use_border = self._active_transp_state()
         do_h = self.opt_holes.get()
         do_c = self.opt_crop.get()
+        crop_pad = self._get_crop_pad()
+        square_canvas = self.opt_square.get()
         do_b = self.opt_bin.get()
         n_colors, colors_ok = self._get_color_count()
         tol = self.opt_tol.get()
-        if not (do_t or do_c or do_b):
+        if not (do_t or do_c or crop_pad > 0 or square_canvas or do_b):
             self._crop_box = (0, 0, self.source_rgba.width, self.source_rgba.height)
             self._is_icon_preview = False
             self.last_preview = self.source_rgba
@@ -2221,6 +2423,8 @@ class App:
                 n_colors=n_colors,
                 lasso=lasso,
                 use_border=use_border,
+                crop_pad=max(0, round(crop_pad * s)),
+                square_canvas=square_canvas,
             )
         except Exception as exc:  # pythonw has no console: surface the error in the UI
             self.set_msg(f"Preview error: {exc}")
@@ -2270,6 +2474,63 @@ class App:
             return
         self.load_picture(Path(path), rgba)
 
+    def paste_clipboard(self, event=None):
+        """Ctrl+V / Paste button: load an image or image file path from the system clipboard."""
+        if event is not None and isinstance(event.widget, (ttk.Spinbox, tkinter.Entry)):
+            return
+        if self._busy:
+            return
+        path, rgba = grab_clipboard_image()
+        if rgba is None:
+            self.set_msg("No image found on the clipboard.")
+            return
+        if path is None:
+            base_dir = self.current_path.parent if self.current_path else Path(tempfile.gettempdir())
+            path = base_dir / "clipboard.png"
+        self.load_picture(path, rgba, extra_msg="(Pasted from clipboard.)")
+
+    def copy_clipboard(self, event=None):
+        """Ctrl+C / Copy button: copy the current processed image (at full resolution) to the clipboard."""
+        if event is not None and isinstance(event.widget, (ttk.Spinbox, tkinter.Entry)):
+            return
+        if self._busy or self.source_rgba is None:
+            if self.source_rgba is None:
+                self.set_msg("Open, drop, or paste an image first.")
+            return
+        do_t, raw_seeds, raw_lasso, use_border = self._active_transp_state()
+        do_h = self.opt_holes.get()
+        do_c = self.opt_crop.get()
+        crop_pad = self._get_crop_pad()
+        square_canvas = self.opt_square.get()
+        do_b = self.opt_bin.get()
+        n_colors, _ = self._get_color_count()
+        tol = self.opt_tol.get()
+        try:
+            if do_t or do_c or crop_pad > 0 or square_canvas or do_b:
+                im, _, _, _ = render_preview(
+                    self.source_rgba,
+                    do_t,
+                    do_c,
+                    do_icon=False,
+                    tol=tol,
+                    remove_holes=do_h,
+                    seeds=raw_seeds,
+                    bin_colors=do_b,
+                    n_colors=n_colors,
+                    lasso=raw_lasso,
+                    use_border=use_border,
+                    crop_pad=crop_pad,
+                    square_canvas=square_canvas,
+                )
+            else:
+                im = self.source_rgba
+            if copy_image_to_clipboard(im):
+                self.set_msg(f"Copied {im.width} × {im.height} px image to clipboard.")
+            else:
+                self.set_msg("Could not copy image to the clipboard.")
+        except Exception as exc:
+            self.set_msg(f"Copy failed: {exc}")
+
     def load_picture(self, path, rgba, extra_msg=""):
         """Make `rgba` (loaded from `path`) the current picture and show it, keeping the options."""
         self.current_path = path
@@ -2286,6 +2547,7 @@ class App:
         self.seeds = []
         self.lasso = []
         self._history = []
+        self._redo_stack = []
         self._comparing = False
         self._update_mode_widgets()
         self._hide_link()
@@ -2301,7 +2563,7 @@ class App:
         else:
             self.last_label = "Original image. Click a color in the image to delete it."
         self.show_image(rgba, self.last_label)
-        if self.opt_crop.get() or self.opt_bin.get():
+        if self.opt_crop.get() or self._get_crop_pad() > 0 or self.opt_square.get() or self.opt_bin.get():
             self.update_live_preview()
         self._update_compare_state()
         if extra_msg:
@@ -2378,7 +2640,7 @@ class App:
 
     def _set_busy(self, busy):
         self._busy = busy
-        for b in (self.btn, self.btn_ico, self.btn_svg, self.btn_open):
+        for b in (self.btn, self.btn_webp, self.btn_ico, self.btn_svg, self.btn_open, self.btn_paste):
             b.state(["disabled"] if busy else ["!disabled"])
         if busy:
             self._hide_link()
@@ -2400,7 +2662,28 @@ class App:
         except Exception as exc:
             self.set_msg(f"Could not open the folder: {exc}")
 
-    def _run_process(self, do_t, do_c, do_icon=False, do_svg=False, bin_colors=False):
+    def _shift_export(self, fn):
+        """Handle Shift-click on an export button by opening a Save As dialog."""
+        self._save_as_next = True
+        try:
+            fn()
+        finally:
+            self._save_as_next = False
+        return "break"
+
+    def _ask_save_as_path(self, ext, label):
+        default_out = next_save_path(self.current_path, ext)
+        chosen = filedialog.asksaveasfilename(
+            parent=self.root,
+            title=f"Save {label} as",
+            initialdir=str(default_out.parent),
+            initialfile=default_out.name,
+            defaultextension=ext,
+            filetypes=[(label, f"*{ext}"), ("All files", "*.*")],
+        )
+        return Path(chosen) if chosen else None
+
+    def _run_process(self, do_t, do_c, do_icon=False, do_svg=False, bin_colors=False, do_webp=False):
         """Export on a worker thread so the window stays responsive; results come back via a queue.
 
         Tk is not thread-safe, so every option is read here on the UI thread and the worker
@@ -2408,6 +2691,14 @@ class App:
         """
         if self._busy:
             return
+        ext = ".svg" if do_svg else ".ico" if do_icon else ".webp" if do_webp else ".png"
+        kind = "SVG" if do_svg else "icon" if do_icon else "WebP" if do_webp else "PNG"
+        out_path = None
+        if getattr(self, "_save_as_next", False):
+            self._save_as_next = False
+            out_path = self._ask_save_as_path(ext, kind)
+            if out_path is None:
+                return
         n_colors, _ = self._get_color_count()
         _, raw_seeds, raw_lasso, use_border = self._active_transp_state()
         path = self.current_path
@@ -2421,6 +2712,11 @@ class App:
             n_colors=n_colors,
             lasso=raw_lasso,
             use_border=use_border,
+            do_webp=do_webp,
+            out_path=out_path,
+            crop_pad=self._get_crop_pad(),
+            square_canvas=self.opt_square.get(),
+            source_im=self.source_rgba,
         )
         results = queue.Queue()
 
@@ -2430,7 +2726,6 @@ class App:
             except Exception as exc:
                 results.put(("error", exc))
 
-        kind = "SVG" if do_svg else "icon" if do_icon else "PNG"
         self._comparing = False
         self._set_busy(True)
         self.set_msg(f"Exporting {kind}…")
@@ -2472,27 +2767,35 @@ class App:
             return
         do_t = self._active_transp_state()[0]
         do_c, do_b = self.opt_crop.get(), self.opt_bin.get()
-        if not (do_t or do_c or do_b):
+        has_crop_opts = self._get_crop_pad() > 0 or self.opt_square.get()
+        if not (do_t or do_c or has_crop_opts or do_b or getattr(self, "_save_as_next", False)):
             if self.opt_mode.get() == "outline":
                 self.set_msg("Nothing to save yet — drag an outline around an object or choose an option on the right.")
             else:
                 self.set_msg("Nothing to save yet — click a color to delete or choose an option on the right.")
             return
-        self._run_process(do_t, do_c, do_icon=False, do_svg=False, bin_colors=do_b)
+        self._run_process(do_t, do_c, do_icon=False, do_svg=False, bin_colors=do_b, do_webp=False)
+
+    def export_webp(self):
+        if self._need_picture():
+            return
+        do_t = self._active_transp_state()[0]
+        do_c, do_b = self.opt_crop.get(), self.opt_bin.get()
+        self._run_process(do_t, do_c, do_icon=False, do_svg=False, bin_colors=do_b, do_webp=True)
 
     def export_icon(self):
         if self._need_picture():
             return
         do_t = self._active_transp_state()[0]
         do_c, do_b = self.opt_crop.get(), self.opt_bin.get()
-        self._run_process(do_t, do_c, do_icon=True, do_svg=False, bin_colors=do_b)
+        self._run_process(do_t, do_c, do_icon=True, do_svg=False, bin_colors=do_b, do_webp=False)
 
     def export_svg(self):
         if self._need_picture():
             return
         do_t = self._active_transp_state()[0]
         do_c = self.opt_crop.get()
-        self._run_process(do_t, do_c, do_icon=False, do_svg=True, bin_colors=True)
+        self._run_process(do_t, do_c, do_icon=False, do_svg=True, bin_colors=True, do_webp=False)
 
     def bind_events(self):
         self.root.drop_target_register(DND_FILES)

@@ -464,6 +464,17 @@ def test_mode_and_undo():
         assert len(app.seeds) == 0
         assert app.last_preview is app.source_rgba
 
+        # Ctrl+Y / Redo restores first click, then second click; a new action clears redo stack
+        app.redo()
+        assert len(app.seeds) == 1
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0 and np.asarray(app.last_preview)[2, 2, 3] == 255
+        app.redo()
+        assert len(app.seeds) == 2
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0 and np.asarray(app.last_preview)[2, 2, 3] == 0
+        app.undo()
+        app.undo()
+        assert len(app.seeds) == 0
+
         # Switching to outline mode enables drag-to-outline
         app.opt_mode.set("outline")
         app._on_mode_change()
@@ -503,6 +514,29 @@ def test_mode_and_undo():
         cx_r2, cy_r2 = app._source_to_canvas(30, 50)
         app.on_press(mk_evt(int(round(cx_r2)), int(round(cy_r2))))
         assert np.asarray(app.last_preview)[50, 30, 3] == 0, "clicked color inside outlined object must be deleted"
+
+        # Crop padding & 1:1 square canvas options
+        app.reset_all()
+        rect_im = Image.new("RGBA", (80, 40), (20, 120, 220, 255))
+        padded = quickimage.apply_crop_options(rect_im, pad_px=5, square=True)
+        assert padded.size == (90, 90), f"expected 90x90 square padded canvas, got {padded.size}"
+        assert np.asarray(padded)[0, 0, 3] == 0 and np.asarray(padded)[45, 45, 3] == 255
+
+        app.opt_pad.set(6)
+        app.opt_square.set(True)
+        app.update_live_preview()
+        assert app.last_preview.size == (112, 112), f"expected 112x112 preview, got {app.last_preview.size}"
+
+        # WebP export & custom out_path ("Save As")
+        with tempfile.TemporaryDirectory() as td:
+            src_p = Path(td) / "sample.png"
+            rect_im.save(src_p)
+            custom_webp = Path(td) / "custom_out.webp"
+            out_w, note_w = process(src_p, False, False, do_webp=True, out_path=custom_webp, crop_pad=4, square_canvas=True)
+            assert out_w == custom_webp and custom_webp.is_file()
+            assert "webp" in note_w and "pad 4px" in note_w and "1:1" in note_w
+            with Image.open(custom_webp) as wim:
+                assert wim.size == (88, 88)
     finally:
         app.root.destroy()
 
