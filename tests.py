@@ -15,12 +15,16 @@ from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
 from quickimage import (
     ICON_SIZES,
+    apply_palette_edits,
+    batch_process,
     content_bbox,
     image_to_svg,
     make_transparent,
     process,
     quantize_foreground_colors,
+    refine_alpha_mask,
     save_svg,
+    transform_image,
 )
 
 
@@ -285,6 +289,10 @@ def main():
 
     test_lasso_extraction()
     test_mode_and_undo()
+    test_transforms_and_zoom()
+    test_edge_and_mask_refinement()
+    test_palette_edits_and_svg()
+    test_batch_processing()
     test_dependencies()
     print("all tests passed")
 
@@ -539,6 +547,165 @@ def test_mode_and_undo():
                 assert wim.size == (88, 88)
     finally:
         app.root.destroy()
+
+
+def test_transforms_and_zoom():
+    from PIL import Image
+    import numpy as np
+    from quickimage import App
+
+    arr = np.zeros((20, 40, 4), dtype=np.uint8)
+    arr[0:5, 0:10] = (255, 0, 0, 255)
+    arr[15:20, 30:40] = (0, 255, 0, 255)
+    im = Image.fromarray(arr, "RGBA")
+
+    r90 = transform_image(im, rotate_deg=90)
+    assert r90.size == (20, 40)
+    r180 = transform_image(im, rotate_deg=180)
+    assert r180.size == (40, 20)
+    assert tuple(np.asarray(r180)[19, 39]) == (255, 0, 0, 255)
+    r270 = transform_image(im, rotate_deg=270)
+    assert r270.size == (20, 40)
+
+    fh = transform_image(im, flip_h=True)
+    assert tuple(np.asarray(fh)[0, 39]) == (255, 0, 0, 255)
+    fv = transform_image(im, flip_v=True)
+    assert tuple(np.asarray(fv)[19, 0]) == (255, 0, 0, 255)
+
+    app = App()
+    app.build_ui()
+    try:
+        app.load_picture(Path("test.png"), im)
+        assert app.source_rgba.size == (40, 20)
+        app.rotate_cw()
+        assert app.source_rgba.size == (20, 40)
+        app.flip_horizontal()
+        assert app.source_rgba.size == (20, 40)
+
+        class DummyEvent:
+            def __init__(self, delta, x=100, y=100):
+                self.delta = delta
+                self.x = x
+                self.y = y
+
+        app.on_zoom(DummyEvent(120))
+        assert app.zoom > 1.0
+        app.reset_zoom()
+        assert app.zoom == 1.0 and app.pan_x == 0.0 and app.pan_y == 0.0
+
+        for bd, expected in (("light", (244, 244, 246)), ("dark", (28, 28, 32)), ("checker", None)):
+            app.opt_backdrop.set(bd)
+            app._on_backdrop_change()
+            tile = app.checker_board(16, 16)
+            assert tile.shape == (16, 16, 3)
+            if expected is not None:
+                assert tuple(tile[0, 0]) == expected
+    finally:
+        app.root.destroy()
+
+
+def test_edge_and_mask_refinement():
+    from PIL import Image
+    import numpy as np
+    from quickimage import App
+
+    arr = np.zeros((40, 40, 4), dtype=np.uint8)
+    arr[:, :] = (240, 240, 240, 255)
+    arr[10:30, 10:30] = (20, 120, 220, 255)
+    orig = Image.fromarray(arr, "RGBA")
+    cut, _ = make_transparent(orig, tol=30, use_border=True)
+    base_fg = int((np.asarray(cut)[..., 3] > 127).sum())
+
+    shrunk = refine_alpha_mask(cut, source_im=orig, edge_choke=-2)
+    grown = refine_alpha_mask(cut, source_im=orig, edge_choke=2)
+    assert int((np.asarray(shrunk)[..., 3] > 127).sum()) < base_fg
+    assert int((np.asarray(grown)[..., 3] > 127).sum()) > base_fg
+
+    feathered = refine_alpha_mask(cut, source_im=orig, edge_feather=2.0)
+    alpha_f = np.asarray(feathered)[..., 3]
+    assert ((alpha_f > 0) & (alpha_f < 255)).any()
+
+    erased = refine_alpha_mask(cut, source_im=orig, brush_strokes=[("erase", 4, [(20, 20)])])
+    assert np.asarray(erased)[20, 20, 3] == 0
+    restored = refine_alpha_mask(erased, source_im=orig, brush_strokes=[("restore", 5, [(20, 20), (5, 5)])])
+    assert np.asarray(restored)[20, 20, 3] == 255
+    assert np.asarray(restored)[5, 5, 3] == 255
+
+    app = App()
+    app.build_ui()
+    try:
+        app.load_picture(Path("brush_test.png"), orig)
+        assert app._active_transp_state() == (False, None, None, False)
+        app.opt_mode.set("brush")
+        app._on_mode_change()
+        app.opt_brush_mode.set("erase")
+        app.opt_brush_size.set(5)
+        cx, cy = app._source_to_canvas(20, 20)
+
+        class Ev:
+            def __init__(self, x, y):
+                self.x = int(round(x))
+                self.y = int(round(y))
+                self.widget = app.canvas
+
+        app.on_press(Ev(cx, cy))
+        app.on_motion(Ev(cx + 2, cy + 2))
+        app.on_release(Ev(cx + 2, cy + 2))
+        assert len(app.brush_strokes) == 1
+        app.undo()
+        assert len(app.brush_strokes) == 0
+        app.redo()
+        assert len(app.brush_strokes) == 1
+    finally:
+        app.root.destroy()
+
+
+def test_palette_edits_and_svg():
+    from PIL import Image
+    import numpy as np
+
+    arr = np.zeros((30, 30, 4), dtype=np.uint8)
+    arr[2:14, 2:28] = (220, 30, 30, 255)
+    arr[16:28, 2:28] = (30, 60, 220, 255)
+    im = Image.fromarray(arr, "RGBA")
+    binned, pal = quantize_foreground_colors(im, n_colors=2)
+    assert pal and len(pal) == 2
+
+    edited, edited_pal = apply_palette_edits(binned, pal, hidden_indices={0}, color_overrides={1: (10, 200, 50)})
+    earr = np.asarray(edited)
+    assert (earr[..., 3] == 0).any()
+    fg = earr[earr[..., 3] > 0]
+    assert len(fg) > 0 and tuple(fg[0, :3]) == (10, 200, 50)
+    assert edited_pal == [(10, 200, 50)]
+
+    svg = image_to_svg(im, n_colors=2, eps=1.2, hidden_indices={0}, color_overrides={1: (10, 200, 50)})
+    root = ET.fromstring(svg)
+    paths = [el for el in root if el.tag.endswith("path")]
+    assert len(paths) == 1
+    assert "#0ac832" in svg
+
+
+def test_batch_processing():
+    from PIL import Image
+    import numpy as np
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        paths = []
+        for i, col in enumerate(((220, 40, 40, 255), (40, 180, 60, 255))):
+            arr = np.full((24, 24, 4), (250, 250, 250, 255), dtype=np.uint8)
+            arr[6:18, 6:18] = col
+            p = td_path / f"item_{i}.png"
+            Image.fromarray(arr, "RGBA").save(p)
+            paths.append(p)
+        outputs, errors = batch_process(paths, do_transp=True, do_crop=True, use_border=True)
+        assert not errors
+        assert len(outputs) == 2
+        for _, out_p, _ in outputs:
+            assert out_p.is_file()
+            with Image.open(out_p) as out_im:
+                assert out_im.size == (12, 12)
 
 
 if __name__ == "__main__":
