@@ -5,11 +5,27 @@ from pathlib import Path
 import numpy as np
 
 from .config import BG_TOL, DEFAULT_SVG_COLORS, ICON_SIZES
-from .io import load_rgba, make_icon_frame, next_save_path, save_ico
-from .ops import apply_crop_options, apply_palette_edits, content_bbox, make_transparent, refine_alpha_mask, transform_image
+from .io import DEFAULT_SUFFIX, load_rgba, make_icon_frame, next_save_path, save_ico
+from .filaments import filament_overrides
+from .ops import (
+    apply_crop_options,
+    apply_palette_edits,
+    content_bbox,
+    make_transparent,
+    refine_alpha_mask,
+    resize_to_longest,
+    transform_image,
+)
 from .outline import _mask_bbox, get_lasso_mask
 from .quantize import quantize_foreground_colors
 from .svg import binned_to_svg
+
+
+def palette_overrides(raw_palette, filaments=None, color_overrides=None):
+    """Swatch recolors on top of the filament mapping: a color you recolored by hand wins."""
+    out = filament_overrides(raw_palette, filaments) if filaments else {}
+    out.update(color_overrides or {})
+    return out or None
 
 
 def render_preview(
@@ -31,11 +47,16 @@ def render_preview(
     brush_strokes=None,
     hidden_indices=None,
     color_overrides=None,
+    out_size=0,
+    filaments=None,
 ):
     """Run transparency/mask-refinement/crop/binning/icon steps in-memory without writing files.
 
     `lasso` (an outline around one object, in image pixels) switches transparency to
     "keep only that object"; with transparency off it still crops to the object.
+    `out_size` scales the result so its longer side is that many px (0 keeps the size); it runs
+    before color binning, so binned colors stay flat. `filaments` (list of rgb) maps every binned
+    color onto one of those filament colors.
     """
     notes = []
     orig_im = im.convert("RGBA")
@@ -84,15 +105,19 @@ def render_preview(
             notes.append(f"pad {int(round(crop_pad))}px")
         if square_canvas:
             notes.append(f"1:1 ({im.width}x{im.height})")
+    if out_size and max(im.size) != int(out_size):
+        im = resize_to_longest(im, out_size)
+        notes.append(f"resized to {im.width}x{im.height}")
     raw_palette = None
     if bin_colors:
         im, raw_palette = quantize_foreground_colors(im, n_colors=n_colors, keep_alpha=True)
         im, active_palette = apply_palette_edits(
-            im, raw_palette, hidden_indices=hidden_indices, color_overrides=color_overrides
+            im, raw_palette, hidden_indices=hidden_indices,
+            color_overrides=palette_overrides(raw_palette, filaments, color_overrides),
         )
         im.info["raw_palette"] = list(raw_palette)
         im.info["active_palette"] = list(active_palette)
-        notes.append(f"{len(active_palette)} color(s)")
+        notes.append(f"{len(active_palette)} {'filament' if filaments else 'color'}(s)")
     preview = make_icon_frame(im, max(ICON_SIZES)) if do_icon else im
     if raw_palette is not None and preview is not im:
         preview.info["raw_palette"] = list(raw_palette)
@@ -124,6 +149,10 @@ def _process_with_preview(
     hidden_indices=None,
     color_overrides=None,
     svg_eps=0.85,
+    out_size=0,
+    filaments=None,
+    out_dir=None,
+    suffix=DEFAULT_SUFFIX,
 ):
     path = Path(path)
     im = source_im.copy() if source_im is not None else load_rgba(path)
@@ -146,29 +175,36 @@ def _process_with_preview(
         brush_strokes=brush_strokes,
         hidden_indices=hidden_indices,
         color_overrides=color_overrides,
+        out_size=0 if do_icon else out_size,  # icons have their own fixed sizes
+        filaments=filaments,
     )
+
+    def target(ext):
+        return Path(out_path) if out_path else next_save_path(path, ext, out_dir=out_dir, suffix=suffix)
+
     if do_svg:
         binned, raw_palette = quantize_foreground_colors(im, n_colors=n_colors)
         binned, palette = apply_palette_edits(
-            binned, raw_palette, hidden_indices=hidden_indices, color_overrides=color_overrides
+            binned, raw_palette, hidden_indices=hidden_indices,
+            color_overrides=palette_overrides(raw_palette, filaments, color_overrides),
         )
         binned.info["raw_palette"] = list(raw_palette)
         binned.info["active_palette"] = list(palette)
-        notes.append(f"{len(palette)} color(s)")
-        out = Path(out_path) if out_path else next_save_path(path, ".svg")
+        notes.append(f"{len(palette)} {'filament' if filaments else 'color'}(s)")
+        out = target(".svg")
         out.write_text(binned_to_svg(binned, palette, eps=svg_eps), encoding="utf-8")
         notes.append("svg")
         preview = binned
     elif do_icon:
-        out = Path(out_path) if out_path else next_save_path(path, ".ico")
+        out = target(".ico")
         save_ico(im, out)
         notes.append(f"ico ({','.join(str(s) for s in ICON_SIZES)}px)")
     elif do_webp:
-        out = Path(out_path) if out_path else next_save_path(path, ".webp")
+        out = target(".webp")
         im.save(out, "WEBP", lossless=True, quality=100)
         notes.append("webp")
     else:
-        out = Path(out_path) if out_path else next_save_path(path, ".png")
+        out = target(".png")
         im.save(out, "PNG")
     return out, ("; ".join(notes) if notes else "saved"), preview, crop_box
 
@@ -196,6 +232,8 @@ def process(
     hidden_indices=None,
     color_overrides=None,
     svg_eps=0.85,
+    out_size=0,
+    filaments=None,
 ):
     out, note, _, _ = _process_with_preview(
         path,
@@ -220,6 +258,8 @@ def process(
         hidden_indices=hidden_indices,
         color_overrides=color_overrides,
         svg_eps=svg_eps,
+        out_size=out_size,
+        filaments=filaments,
     )
     return out, note
 
@@ -244,8 +284,18 @@ def batch_process(
     rotate_deg=0,
     flip_h=False,
     flip_v=False,
+    out_size=0,
+    filaments=None,
+    out_dir=None,
+    suffix=DEFAULT_SUFFIX,
 ):
-    """Process a sequence of image paths with shared settings. Returns `(outputs, errors)`."""
+    """Process a sequence of image paths with shared settings. Returns `(outputs, errors)`.
+
+    One output format per batch: `do_svg`, `do_icon`, `do_webp`, or PNG when none is set.
+    Outputs go next to each original, or into `out_dir`, named `<stem><suffix>.<ext>`.
+    """
+    if out_dir:
+        Path(out_dir).mkdir(parents=True, exist_ok=True)
     outputs = []
     errors = []
     for p in paths:
@@ -274,6 +324,10 @@ def batch_process(
                 edge_choke=edge_choke,
                 edge_feather=edge_feather,
                 svg_eps=svg_eps,
+                out_size=out_size,
+                filaments=filaments,
+                out_dir=out_dir,
+                suffix=suffix,
             )
             outputs.append((p, out, note))
         except Exception as exc:

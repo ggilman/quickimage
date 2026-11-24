@@ -17,8 +17,11 @@ from ..bootstrap import APP_ICON_PNG, APP_NAME, DependencyDialog, missing_depend
 from ..core.config import BG_TOL, DEFAULT_SVG_COLORS, ICON_SIZES, IMG_EXT, PREVIEW_MAX_SIDE
 from ..core.io import is_image_file, load_rgba, next_save_path
 from ..core.ops import transform_image
+from ..core.filaments import DEFAULT_MATERIAL, filament_overrides, load_catalog, material_filaments, materials
 from ..core.pipeline import _process_with_preview, batch_process, render_preview
+from .batch_options import BatchOptions
 from .desktop import copy_image_to_clipboard, grab_clipboard_image, reveal_in_folder, set_dark_title_bar
+from .filament_picker import FilamentPicker, filament_label
 from .theme import apply_theme
 
 
@@ -50,6 +53,8 @@ class App:
         self.root.bind("<Control-Shift-z>", self.redo)
         self.root.bind("<KeyPress-space>", self.compare_start)
         self.root.bind("<KeyRelease-space>", self.compare_end)
+        self.root.bind("<bracketleft>", lambda e: self._step_brush_size(e, -1))
+        self.root.bind("<bracketright>", lambda e: self._step_brush_size(e, +1))
 
         self.canvas = None
         self.bw = 1
@@ -89,6 +94,8 @@ class App:
         # 2. Edge & Mask Refinement
         self.opt_brush_mode = tkinter.StringVar(value="erase")
         self.opt_brush_size = tkinter.IntVar(value=12)
+        self.opt_brush_soft = tkinter.IntVar(value=0)  # % of the radius that fades out
+        self._pointer = None  # last mouse position over the canvas (for the brush cursor)
         self.brush_strokes = []
         self._Active_stroke = None
         self._active_stroke = None
@@ -100,6 +107,14 @@ class App:
         self.color_overrides = {}
         self._last_raw_palette = []
         self.opt_svg_eps = tkinter.DoubleVar(value=0.85)
+        self.opt_filaments = tkinter.BooleanVar(value=False)
+        self.opt_fil_mode = tkinter.StringVar(value="auto")  # "auto": best match from a material; "manual": picked
+        self.opt_fil_material = tkinter.StringVar(value=DEFAULT_MATERIAL)  # Auto's material, and the picker's start
+        self.filaments = []  # manually picked Bambu filaments (dicts with material, name, hex, rgb)
+
+        # 4. Export
+        self.opt_out_size = tkinter.IntVar(value=0)  # longest side in px; 0 keeps the size
+        self._batch_opts = None  # last batch dialog choices
 
     def px(self, v):
         """Scale a design size in px (at 100 %) to the screen's DPI."""
@@ -125,6 +140,33 @@ class App:
             return max(1, min(100, int(self.opt_brush_size.get())))
         except (tkinter.TclError, ValueError):
             return 12
+
+    def _get_brush_soft(self):
+        """Return brush softness as a fraction 0.0..1.0 (spinbox shows 0..100 %)."""
+        try:
+            return max(0, min(100, int(self.opt_brush_soft.get()))) / 100.0
+        except (tkinter.TclError, ValueError):
+            return 0.0
+
+    def _get_out_size(self):
+        """Return the export size (longest side, px; 0 = unchanged). Invalid text falls back to 0."""
+        try:
+            return max(0, min(16384, int(self.opt_out_size.get())))
+        except (tkinter.TclError, ValueError):
+            return 0
+
+    def _filament_candidates(self):
+        """The filaments binned colors may become: all colors of the Auto material, or the manual picks."""
+        if not self.opt_filaments.get():
+            return []
+        if self.opt_fil_mode.get() == "auto":
+            return material_filaments(self.opt_fil_material.get())
+        return list(self.filaments)
+
+    def _active_filaments(self):
+        """Filament colors to map binned colors onto, or None when that option is off."""
+        cands = self._filament_candidates()
+        return [tuple(f["rgb"]) for f in cands] or None
 
     def _get_edge_choke(self):
         """Return edge choke in pixels (-10..+10). Invalid text falls back to 0."""
@@ -240,6 +282,8 @@ class App:
         self.canvas.bind("<Configure>", self.on_canvas_resize)
         self.canvas.bind("<ButtonPress-1>", self.on_press)
         self.canvas.bind("<B1-Motion>", self.on_motion)
+        self.canvas.bind("<Motion>", self.on_canvas_motion)
+        self.canvas.bind("<Leave>", self.on_canvas_leave)
         self.canvas.bind("<ButtonRelease-1>", self.on_release)
         self.canvas.bind("<Button-3>", lambda _e: self.clear_picks())
         self.canvas.bind("<MouseWheel>", self.on_zoom)
@@ -311,7 +355,14 @@ class App:
             self.brush_frame, from_=1, to=100, width=3, textvariable=self.opt_brush_size
         )
         self.spin_brush_size.grid(row=0, column=3)
+        ttk.Label(self.brush_frame, text="Soft %").grid(row=1, column=2, padx=(0, P(4)), pady=(P(4), 0))
+        self.spin_brush_soft = ttk.Spinbox(
+            self.brush_frame, from_=0, to=100, increment=10, width=3, textvariable=self.opt_brush_soft
+        )
+        self.spin_brush_soft.grid(row=1, column=3, pady=(P(4), 0))
         place(self.brush_frame, pady=(0, P(4)))
+        for var in (self.opt_brush_size, self.opt_brush_soft, self.opt_brush_mode):
+            var.trace_add("write", lambda *_a: self._redraw_brush_cursor())
 
         self.chk_h = ttk.Checkbutton(
             side, variable=self.opt_holes, text="Remove interior holes", command=self.schedule_live_preview
@@ -377,6 +428,44 @@ class App:
         self.spin_colors.grid(row=0, column=1, padx=(P(8), 0))
         place(bin_row)
 
+        fil_row = ttk.Frame(side)
+        self.chk_fil = ttk.Checkbutton(
+            fil_row, variable=self.opt_filaments, text="Bambu filaments", command=self._on_filaments_toggle
+        )
+        self.chk_fil.grid(row=0, column=0, sticky="w")
+        self.rad_fil_auto = ttk.Radiobutton(
+            fil_row, variable=self.opt_fil_mode, value="auto", text="Auto", command=self._on_fil_mode_change
+        )
+        self.rad_fil_auto.grid(row=0, column=1, padx=(P(10), P(4)))
+        self.rad_fil_manual = ttk.Radiobutton(
+            fil_row, variable=self.opt_fil_mode, value="manual", text="Manual", command=self._on_fil_mode_change
+        )
+        self.rad_fil_manual.grid(row=0, column=2)
+        place(fil_row, pady=(P(4), 0))
+
+        # Second line: the material for Auto, or the Pick button for Manual (same place, one at a time)
+        self.fil_opts = ttk.Frame(side)
+        self.fil_auto_frame = ttk.Frame(self.fil_opts)
+        ttk.Label(self.fil_auto_frame, text="Material").grid(row=0, column=0, sticky="w")
+        self.cmb_fil_material = ttk.Combobox(
+            self.fil_auto_frame,
+            textvariable=self.opt_fil_material,
+            values=materials(load_catalog()),
+            state="readonly",
+            width=20,
+        )
+        self.cmb_fil_material.grid(row=0, column=1, padx=(P(8), 0))
+        self.cmb_fil_material.bind("<<ComboboxSelected>>", lambda _e: self._on_fil_material_change())
+        self.fil_manual_frame = ttk.Frame(self.fil_opts)
+        self.btn_fil = ttk.Button(self.fil_manual_frame, text="Pick…", width=6, command=self.pick_filaments)
+        self.btn_fil.grid(row=0, column=0, sticky="w")
+        self.lbl_fil_picked = ttk.Label(self.fil_manual_frame, text="", style="Muted.TLabel")
+        self.lbl_fil_picked.grid(row=0, column=1, sticky="w", padx=(P(8), 0))
+        for f in (self.fil_auto_frame, self.fil_manual_frame):
+            f.grid(row=0, column=0, sticky="w")
+        place(self.fil_opts, pady=(P(4), 0))
+        self._update_filament_widgets()
+
         self.swatch_frame = ttk.Frame(side)
         place(self.swatch_frame, sticky="ew", pady=(P(4), 0))
 
@@ -391,7 +480,7 @@ class App:
         place(
             ttk.Label(
                 side,
-                text="Flat colors, e.g. one per filament for 3D printing. Click swatch to hide, right-click to recolor.",
+                text="Click a swatch to hide it, right-click to recolor.",
                 style="Hint.TLabel",
                 wraplength=wrap,
                 justify="left",
@@ -402,24 +491,34 @@ class App:
         self.opt_colors.trace_add("write", self._on_color_count_change)
 
         section("Export")
+        size_row = ttk.Frame(side)
+        ttk.Label(size_row, text="Longest side (px)").grid(row=0, column=0, sticky="w")
+        self.spin_out_size = ttk.Spinbox(
+            size_row, from_=0, to=16384, increment=64, width=6, textvariable=self.opt_out_size
+        )
+        self.spin_out_size.grid(row=0, column=1, padx=(P(8), P(6)))
+        ttk.Label(size_row, text="0 = original", style="Hint.TLabel").grid(row=0, column=2, sticky="w")
+        place(size_row, pady=(0, P(6)))
         self.btn = ttk.Button(side, text="Save PNG", style="Accent.TButton", command=self.apply)
         self.btn.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.apply))
         place(self.btn, sticky="ew", pady=(0, P(4)))
-        self.btn_webp = ttk.Button(side, text="Save WebP (.webp)", command=self.export_webp)
-        self.btn_webp.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_webp))
-        place(self.btn_webp, sticky="ew", pady=(0, P(4)))
-        self.btn_ico = ttk.Button(side, text="Export icon (.ico)", command=self.export_icon)
-        self.btn_ico.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_icon))
-        place(self.btn_ico, sticky="ew", pady=(0, P(4)))
-        self.btn_svg = ttk.Button(side, text="Export SVG (.svg)", command=self.export_svg)
-        self.btn_svg.bind("<Shift-ButtonRelease-1>", lambda _e: self._shift_export(self.export_svg))
-        place(self.btn_svg, sticky="ew", pady=(0, P(4)))
+        formats = ttk.Frame(side)
+        self.btn_webp = ttk.Button(formats, text="WebP", command=self.export_webp)
+        self.btn_ico = ttk.Button(formats, text="Icon (.ico)", command=self.export_icon)
+        self.btn_svg = ttk.Button(formats, text="SVG", command=self.export_svg)
+        for col, (b, fn) in enumerate(
+            ((self.btn_webp, self.export_webp), (self.btn_ico, self.export_icon), (self.btn_svg, self.export_svg))
+        ):
+            b.bind("<Shift-ButtonRelease-1>", lambda _e, fn=fn: self._shift_export(fn))
+            b.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else P(4), 0))
+            formats.columnconfigure(col, weight=1, uniform="fmt")
+        place(formats, sticky="ew", pady=(0, P(4)))
         self.btn_batch = ttk.Button(side, text="Batch…", command=self.batch_dialog)
         place(self.btn_batch, sticky="ew")
         place(
             ttk.Label(
                 side,
-                text="Files are saved next to the original (Shift-click to Save As…).",
+                text="Saved next to the original. Shift-click to choose where.",
                 style="Hint.TLabel",
                 wraplength=wrap,
             ),
@@ -586,6 +685,7 @@ class App:
         self.tkimg = photo
         if overlay:
             self._draw_lasso()
+        self._redraw_brush_cursor()
         if label:
             self.set_msg(label)
 
@@ -786,11 +886,70 @@ class App:
         self._update_mode_widgets()
         self.update_live_preview()
 
+    def _brush_radius_on_canvas(self):
+        """The brush radius (in source-image pixels) as canvas pixels.
+
+        Strokes are applied in source pixels, but the shown picture may be a downscaled proxy,
+        a crop, or an icon preview, so map through the same geometry as the mouse coordinates.
+        """
+        r_src = float(self._get_brush_size())
+        x0, _ = self._source_to_canvas(0.0, 0.0)
+        x1, _ = self._source_to_canvas(r_src, 0.0)
+        return abs(x1 - x0)
+
+    def _brush_color(self):
+        return "#ff5c5c" if self.opt_brush_mode.get() == "erase" else "#4cd964"
+
+    def _draw_brush_cursor(self, cx, cy):
+        """The brush outline under the mouse while hovering, so its size is visible before painting."""
+        self.canvas.delete("brush_cursor")
+        if (
+            self.opt_mode.get() != "brush"
+            or self.source_rgba is None
+            or self._comparing
+            or self._active_stroke
+            or self.hover_path is not None
+        ):
+            return
+        r = max(2.0, self._brush_radius_on_canvas())
+        color = self._brush_color()
+        self.canvas.create_oval(cx - r, cy - r, cx + r, cy + r, outline=color, width=self.px(2), tags="brush_cursor")
+        soft = self._get_brush_soft()
+        if soft > 0:  # the inner, full-strength part of a soft brush
+            ri = max(1.0, r * (1.0 - soft))
+            self.canvas.create_oval(
+                cx - ri, cy - ri, cx + ri, cy + ri, outline=color, width=1, dash=(3, 3), tags="brush_cursor"
+            )
+
+    def _redraw_brush_cursor(self):
+        if self.canvas is not None and self._pointer is not None:
+            self._draw_brush_cursor(*self._pointer)
+
+    def on_canvas_motion(self, event):
+        self._pointer = (event.x, event.y)
+        self._draw_brush_cursor(event.x, event.y)
+
+    def on_canvas_leave(self, _event=None):
+        self._pointer = None
+        self.canvas.delete("brush_cursor")
+
+    def _step_brush_size(self, event, direction):
+        """[ and ]: smaller / larger brush (steps grow with the size)."""
+        if isinstance(event.widget, (ttk.Entry, ttk.Spinbox, tkinter.Entry)):
+            return None  # typing a value
+        if self.opt_mode.get() != "brush":
+            return None
+        cur = self._get_brush_size()
+        step = 1 if cur < 10 else 2 if cur < 30 else 5
+        new = max(1, min(100, cur + direction * step))
+        self.opt_brush_size.set(new)
+        self.set_msg(f"Brush size {new}")
+        return "break"
+
     def _draw_brush_live(self, cx, cy, canvas_pts):
         self.canvas.delete("brush_live")
-        r_src = self._get_brush_size()
-        r_disp = max(2.0, r_src * self._disp_scale)
-        color = "#ff5c5c" if self.opt_brush_mode.get() == "erase" else "#4cd964"
+        r_disp = max(2.0, self._brush_radius_on_canvas())
+        color = self._brush_color()
         if len(canvas_pts) >= 2:
             flat = [c for p in canvas_pts for c in p]
             self.canvas.create_line(
@@ -815,6 +974,7 @@ class App:
             p = self._canvas_to_source(event.x, event.y, clamp=True)
             if p is None:
                 return
+            self.canvas.delete("brush_cursor")
             self._active_stroke = [(event.x, event.y)]
             self._Active_stroke = [p]
             self._draw_brush_live(event.x, event.y, self._active_stroke)
@@ -879,9 +1039,10 @@ class App:
                 src_pts.append(p)
             self._push_history()
             radius_src = float(self._get_brush_size())
-            self.brush_strokes.append((self.opt_brush_mode.get(), radius_src, list(src_pts)))
+            self.brush_strokes.append((self.opt_brush_mode.get(), radius_src, list(src_pts), self._get_brush_soft()))
             self._update_mode_widgets()
             self.update_live_preview()
+            self._draw_brush_cursor(event.x, event.y)
             return
         pts, far = self._drag, self._drag_far
         self._drag, self._drag_far = None, False
@@ -957,8 +1118,12 @@ class App:
         is_brush = mode == "brush"
         self.tol_scale.state(["disabled"] if (is_outline or is_brush) else ["!disabled"])
         self.tol_label.configure(style="Muted.TLabel" if (is_outline or is_brush) else "TLabel")
-        for w in (self.rad_brush_erase, self.rad_brush_restore, self.spin_brush_size):
+        for w in (self.rad_brush_erase, self.rad_brush_restore, self.spin_brush_size, self.spin_brush_soft):
             w.state(["!disabled"] if is_brush else ["disabled"])
+        if not is_brush:
+            self.canvas.delete("brush_cursor")
+        else:
+            self._redraw_brush_cursor()
         has_transp = bool(self.lasso or self.seeds)
         self.chk_h.state(["!disabled"] if has_transp else ["disabled"])
         if is_outline:
@@ -969,7 +1134,7 @@ class App:
         elif is_brush:
             self.mode_hint.configure(
                 text="Drag over the image to erase to transparent or restore from original. "
-                "Ctrl+Z undoes, right-click clears."
+                "[ and ] change the size. Ctrl+Z undoes, right-click clears."
             )
         else:
             self.mode_hint.configure(
@@ -987,6 +1152,7 @@ class App:
     def _on_color_count_change(self, *_args):
         self.hidden_colors.clear()
         self.color_overrides.clear()
+        self._update_filament_widgets()
         self.schedule_live_preview()
 
     def toggle_swatch(self, idx):
@@ -998,9 +1164,7 @@ class App:
 
     def recolor_swatch(self, idx, rgb=None):
         if rgb is None:
-            cur = self.color_overrides.get(idx)
-            if cur is None and idx < len(self._last_raw_palette):
-                cur = self._last_raw_palette[idx]
+            cur = self._shown_swatch_color(idx)
             init_hex = f"#{cur[0]:02x}{cur[1]:02x}{cur[2]:02x}" if cur else "#ffffff"
             chosen_rgb, _ = colorchooser.askcolor(color=init_hex, parent=self.root, title=f"Recolor bin #{idx + 1}")
             if not chosen_rgb:
@@ -1019,8 +1183,10 @@ class App:
             return
         self._last_raw_palette = list(raw_palette)
         P = self.px
+        fil = self._active_filaments()
+        fil_map = filament_overrides(raw_palette, fil) if fil else {}
         for idx, raw_rgb in enumerate(raw_palette):
-            rgb = self.color_overrides.get(idx, raw_rgb)
+            rgb = self.color_overrides.get(idx, fil_map.get(idx, raw_rgb))
             hex_col = f"#{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}"
             is_hidden = idx in self.hidden_colors
             sw = tkinter.Canvas(
@@ -1039,6 +1205,118 @@ class App:
             sw.bind("<Button-1>", lambda _e, i=idx: self.toggle_swatch(i))
             sw.bind("<Shift-Button-1>", lambda _e, i=idx: self.recolor_swatch(i))
             sw.bind("<Button-3>", lambda _e, i=idx: self.recolor_swatch(i))
+            sw.bind("<Enter>", lambda _e, i=idx: self._swatch_hover(i))
+            sw.bind("<Leave>", lambda _e: self.set_msg(self.last_label or ""))
+
+    def _shown_swatch_color(self, idx):
+        """The color a swatch currently stands for: hand recolor, else filament, else binned."""
+        if idx in self.color_overrides:
+            return tuple(self.color_overrides[idx])
+        fil = self._active_filaments()
+        if fil and idx < len(self._last_raw_palette):
+            return filament_overrides(self._last_raw_palette, fil).get(idx, self._last_raw_palette[idx])
+        return tuple(self._last_raw_palette[idx]) if idx < len(self._last_raw_palette) else None
+
+    def _swatch_hover(self, idx):
+        rgb = self._shown_swatch_color(idx)
+        if rgb is None:
+            return
+        hex_col = f"#{rgb[0]:02X}{rgb[1]:02X}{rgb[2]:02X}"
+        name = None
+        if idx not in self.color_overrides:
+            name = next((filament_label(f) for f in self._filament_candidates() if tuple(f["rgb"]) == rgb), None)
+        hidden = " (hidden)" if idx in self.hidden_colors else ""
+        self.set_msg(f"{name + ' ' if name else ''}{hex_col}{hidden} — click to hide or show, right-click to recolor.")
+
+    def _update_filament_widgets(self):
+        """Show the material box (Auto) or the Pick button (Manual); grey out when filaments are off."""
+        if not hasattr(self, "fil_auto_frame"):
+            return
+        manual = self.opt_fil_mode.get() == "manual"
+        (self.fil_manual_frame if manual else self.fil_auto_frame).grid()
+        (self.fil_auto_frame if manual else self.fil_manual_frame).grid_remove()
+        on = ["!disabled"] if self.opt_filaments.get() else ["disabled"]
+        for w in (self.rad_fil_auto, self.rad_fil_manual, self.btn_fil):
+            w.state(on)
+        self.cmb_fil_material.state(["readonly"] + on)
+        n, want = len(self.filaments), self._get_color_count()[0]
+        if not n:
+            text = f"pick {want}"
+        elif n == want:
+            text = f"{n} picked"
+        else:
+            text = f"{n} picked, color limit {want}"
+        self.lbl_fil_picked.configure(text=text)
+
+    def _filaments_changed(self):
+        self.hidden_colors.clear()
+        self.color_overrides.clear()
+        self._update_filament_widgets()
+        self.schedule_live_preview()
+
+    def _on_filaments_toggle(self):
+        if self.opt_filaments.get():
+            self.opt_bin.set(True)
+            if self.opt_fil_mode.get() == "manual" and not self.filaments:
+                self.pick_filaments()
+                return
+        self._filaments_changed()
+
+    def _auto_chosen_filaments(self):
+        """The filaments Auto is using for the current preview, in swatch order (no repeats)."""
+        if not self._last_raw_palette:
+            return []
+        cands = material_filaments(self.opt_fil_material.get())
+        by_rgb = {tuple(f["rgb"]): f for f in cands}
+        mapping = filament_overrides(self._last_raw_palette, list(by_rgb))
+        chosen = []
+        for idx in range(len(self._last_raw_palette)):
+            f = by_rgb.get(mapping.get(idx))
+            if f is not None and f not in chosen:
+                chosen.append(f)
+        return chosen
+
+    def _on_fil_mode_change(self):
+        if self.opt_fil_mode.get() == "manual":
+            # Start Manual from what Auto chose, so changing one filament is a single click.
+            # Auto's choice is the best match among exactly these filaments, so the preview and
+            # any hidden or recolored swatches stay the same.
+            auto = self._auto_chosen_filaments() if self.opt_filaments.get() else []
+            if auto:
+                self.filaments = [dict(f) for f in auto]
+                self._update_filament_widgets()
+                self.update_live_preview()  # now, so its status line does not replace the message below
+                names = ", ".join(filament_label(f) for f in self.filaments)
+                self.set_msg(f"Manual, starting from Auto's filaments: {names}. Click Pick… to change one.")
+                return
+            if not self.filaments:
+                self.pick_filaments()
+                return
+        self._filaments_changed()
+
+    def _on_fil_material_change(self):
+        self.cmb_fil_material.selection_clear()
+        self._filaments_changed()
+
+    def pick_filaments(self):
+        """Manual mode: pick as many Bambu filaments as the color limit; each binned color becomes one."""
+        count = self._get_color_count()[0]
+        dlg = FilamentPicker(
+            self.root, self.palette, self.px, count=count, selected=self.filaments, material=self.opt_fil_material.get()
+        )
+        self.root.wait_window(dlg.top)
+        if dlg.result is None:
+            if not self.filaments:  # nothing to use manually: fall back to Auto
+                self.opt_fil_mode.set("auto")
+            self._filaments_changed()
+            return
+        self.filaments = dlg.result
+        self.opt_fil_mode.set("manual")
+        self.opt_filaments.set(True)
+        self.opt_bin.set(True)
+        self._filaments_changed()
+        names = ", ".join(filament_label(f) for f in self.filaments)
+        self.set_msg(f"Filaments: {names}.")
 
     def clear_picks(self):
         if not self.seeds and not self.lasso and not self.brush_strokes:
@@ -1073,6 +1351,10 @@ class App:
         self.opt_choke.set(0)
         self.opt_feather.set(0.0)
         self.opt_svg_eps.set(0.85)
+        self.opt_filaments.set(False)  # the picked filaments are kept for next time
+        self._update_filament_widgets()
+        self.opt_out_size.set(0)
+        self.opt_brush_soft.set(0)
         self._set_tolerance(BG_TOL)
         self.opt_colors.set(DEFAULT_SVG_COLORS)  # its trace schedules a preview; cancelled below
         self._rebuild_swatches(None)
@@ -1153,7 +1435,7 @@ class App:
         seeds = [(x * s, y * s) for x, y in raw_seeds] if raw_seeds else None
         lasso = [(x * s, y * s) for x, y in raw_lasso] if raw_lasso else None
         scaled_strokes = (
-            [(m, max(1.0, r * s), [(x * s, y * s) for x, y in pts]) for m, r, pts in self.brush_strokes]
+            [(m, max(1.0, r * s), [(x * s, y * s) for x, y in pts], *rest) for m, r, pts, *rest in self.brush_strokes]
             if self.brush_strokes
             else None
         )
@@ -1177,6 +1459,7 @@ class App:
                 brush_strokes=scaled_strokes,
                 hidden_indices=self.hidden_colors or None,
                 color_overrides=self.color_overrides or None,
+                filaments=self._active_filaments() if do_b else None,
             )
         except Exception as exc:  # pythonw has no console: surface the error in the UI
             self.set_msg(f"Preview error: {exc}")
@@ -1462,9 +1745,50 @@ class App:
             return
         self._run_batch(paths, from_drop=False)
 
-    def _run_batch(self, paths, from_drop=False):
+    def _batch_settings_summary(self):
+        parts = []
+        if self.opt_crop.get():
+            parts.append("crop to content")
+        if self._get_crop_pad() > 0:
+            parts.append(f"pad {self._get_crop_pad()} px")
+        if self.opt_square.get():
+            parts.append("square")
+        if self.opt_bin.get():
+            n = self._get_color_count()[0]
+            if not self._active_filaments():
+                parts.append(f"{n} colors")
+            elif self.opt_fil_mode.get() == "auto":
+                parts.append(f"{n} best-matching Bambu {self.opt_fil_material.get()} filaments")
+            else:
+                parts.append(f"{len(self.filaments)} picked Bambu filaments")
+        if self._get_edge_choke():
+            parts.append(f"edge {self._get_edge_choke():+d} px")
+        if self._get_edge_feather() > 0:
+            parts.append(f"feather {self._get_edge_feather():g} px")
+        if self._get_out_size():
+            parts.append(f"longest side {self._get_out_size()} px")
+        parts.append(f"tolerance {self.opt_tol.get()}")
+        return ", ".join(parts)
+
+    def _ask_batch_options(self, paths):
+        initial = str(Path(paths[0]).parent) if paths else None
+        dlg = BatchOptions(
+            self.root, self.px, len(paths), self._batch_settings_summary(), options=self._batch_opts, initial_dir=initial
+        )
+        self.root.wait_window(dlg.top)
+        if dlg.result is not None:
+            self._batch_opts = dlg.result
+        return dlg.result
+
+    def _run_batch(self, paths, from_drop=False, options=None):
         if self._busy:
             return
+        if options is None:
+            options = self._ask_batch_options(paths)
+            if options is None:
+                self.set_msg("Batch cancelled.")
+                return
+        fmt = options["format"]
         n_colors, _ = self._get_color_count()
         do_c = self.opt_crop.get()
         do_b = self.opt_bin.get()
@@ -1475,25 +1799,28 @@ class App:
         svg_eps = self._get_svg_eps()
         tol = self.opt_tol.get()
         remove_holes = self.opt_holes.get()
-        # For batch processing across multiple files, auto-remove border background unless other options are set
-        do_t = True
-        use_border = True
+        # Batch files have no clicked colors: background removal uses the colors at the image border
+        do_t = bool(options["remove_bg"])
         kwargs = dict(
             do_transp=do_t,
             do_crop=do_c,
-            do_icon=False,
+            do_icon=fmt == "ico",
             tol=tol,
             remove_holes=remove_holes,
-            do_svg=False,
-            bin_colors=do_b,
+            do_svg=fmt == "svg",
+            bin_colors=do_b or fmt == "svg",
             n_colors=n_colors,
-            use_border=use_border,
-            do_webp=False,
+            use_border=do_t,
+            do_webp=fmt == "webp",
             crop_pad=crop_pad,
             square_canvas=square_canvas,
             edge_choke=choke,
             edge_feather=feather,
             svg_eps=svg_eps,
+            out_size=self._get_out_size(),
+            filaments=self._active_filaments(),
+            out_dir=options["out_dir"] if options.get("use_folder") else None,
+            suffix=options["suffix"],
         )
         results = queue.Queue()
 
@@ -1523,7 +1850,10 @@ class App:
         if outputs:
             self.last_output = outputs[-1][1]
             self.link.grid()
-        err_part = f" ({len(errors)} failed)" if errors else ""
+        err_part = ""
+        if errors:
+            first = errors[0]
+            err_part = f" ({len(errors)} failed — {Path(first[0]).name}: {first[1]})"
         if from_drop:
             self.set_msg(f"Opened first image and batch-saved {len(outputs)} files{err_part}.")
         else:
@@ -1590,6 +1920,8 @@ class App:
             hidden_indices=set(self.hidden_colors) if self.hidden_colors else None,
             color_overrides=dict(self.color_overrides) if self.color_overrides else None,
             svg_eps=self._get_svg_eps(),
+            out_size=self._get_out_size(),
+            filaments=self._active_filaments(),
         )
         results = queue.Queue()
 

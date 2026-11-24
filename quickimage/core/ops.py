@@ -120,11 +120,60 @@ def transform_image(im, rotate_deg=0, flip_h=False, flip_v=False):
     return out
 
 
+def _apply_brush_stroke(alpha, mode, radius, pts, softness=0.0):
+    """Erase (lower) or restore (raise) `alpha` (float32, 0..255) under one brush stroke.
+
+    With `softness` > 0 the outer `softness * radius` pixels fade, so the stroke blends in.
+    Erasing takes the minimum and restoring the maximum, so a stroke never compounds with itself.
+    """
+    if not pts:
+        return alpha
+    h, w = alpha.shape
+    r = max(1, int(round(radius)))
+    xs = [p[0] for p in pts]
+    ys = [p[1] for p in pts]
+    x0, y0 = max(0, int(np.floor(min(xs))) - r - 2), max(0, int(np.floor(min(ys))) - r - 2)
+    x1, y1 = min(w, int(np.ceil(max(xs))) + r + 3), min(h, int(np.ceil(max(ys))) + r + 3)
+    if x1 <= x0 or y1 <= y0:
+        return alpha
+    stamp = Image.new("L", (x1 - x0, y1 - y0), 0)
+    draw = ImageDraw.Draw(stamp)
+    local = [(x - x0, y - y0) for x, y in pts]
+    if len(local) > 1:
+        draw.line([int(round(c)) for pt in local for c in pt], fill=255, width=2 * r, joint="curve")
+    for x, y in local:
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=255)
+    covered = np.asarray(stamp) > 0
+    soft = float(softness or 0.0)
+    if soft > 0:
+        ramp = max(1.0, soft * r)
+        cover = np.clip(distance_transform_edt(covered) / ramp, 0.0, 1.0).astype(np.float32)
+    else:
+        cover = covered.astype(np.float32)
+    sub = alpha[y0:y1, x0:x1]
+    if mode == "erase":
+        alpha[y0:y1, x0:x1] = np.minimum(sub, 255.0 * (1.0 - cover))
+    else:
+        alpha[y0:y1, x0:x1] = np.maximum(sub, 255.0 * cover)
+    return alpha
+
+
+def resize_to_longest(im, longest):
+    """Scale `im` so its longer side is `longest` px (up or down); 0 or None keeps it as is."""
+    longest = int(longest or 0)
+    if longest <= 0 or max(im.size) == longest:
+        return im
+    s = longest / float(max(im.size))
+    size = (max(1, int(round(im.width * s))), max(1, int(round(im.height * s))))
+    return im.convert("RGBA").resize(size, Image.LANCZOS)
+
+
 def refine_alpha_mask(im, source_im=None, edge_choke=0, edge_feather=0.0, brush_strokes=None):
     """Apply touch-up brush strokes (erase/restore), edge shrink/grow (choke), and feathering.
 
-    `brush_strokes`: list of `(mode, radius, points)` where `mode` is `'erase'` or `'restore'`,
-    `radius` is in pixels, and `points` is a list of `(x, y)` coordinates in `im` pixel space.
+    `brush_strokes`: list of `(mode, radius, points[, softness])` where `mode` is `'erase'` or
+    `'restore'`, `radius` is in pixels, `points` is a list of `(x, y)` coordinates in `im` pixel
+    space, and `softness` (0..1, default 0) is the fraction of the radius that fades out.
     `edge_choke`: negative erodes (shrinks) foreground, positive dilates (grows) foreground.
     `edge_feather`: Gaussian/box softness radius in pixels applied to the alpha edge.
     """
@@ -134,29 +183,13 @@ def refine_alpha_mask(im, source_im=None, edge_choke=0, edge_feather=0.0, brush_
     alpha = rgba[..., 3].astype(np.float32)
 
     if brush_strokes:
-        mask_im = Image.fromarray(np.clip(np.round(alpha), 0, 255).astype(np.uint8), "L")
-        draw = ImageDraw.Draw(mask_im)
-        restored_any = False
-        for mode, radius, pts in brush_strokes:
-            if not pts:
-                continue
-            r = max(1, int(round(radius)))
-            val = 0 if mode == "erase" else 255
-            if mode == "restore":
-                restored_any = True
-            if len(pts) == 1:
-                x, y = pts[0]
-                draw.ellipse([x - r, y - r, x + r, y + r], fill=val)
-            else:
-                flat = [int(round(c)) for pt in pts for c in pt]
-                draw.line(flat, fill=val, width=2 * r, joint="curve")
-                for x, y in pts:
-                    draw.ellipse([x - r, y - r, x + r, y + r], fill=val)
-        new_alpha = np.asarray(mask_im).astype(np.float32)
-        if restored_any and src_rgba.shape[:2] == (h, w):
-            restored = (new_alpha > alpha) & (rgba[..., 3] == 0)
+        orig_alpha = rgba[..., 3].copy()
+        for stroke in brush_strokes:
+            alpha = _apply_brush_stroke(alpha, *stroke)
+        alpha = np.clip(np.round(alpha), 0, 255).astype(np.float32)
+        if src_rgba.shape[:2] == (h, w):
+            restored = (alpha > orig_alpha) & (orig_alpha == 0)
             rgba[restored, :3] = src_rgba[restored, :3]
-        alpha = new_alpha
 
     choke = int(round(edge_choke))
     if choke != 0 and (alpha > 0).any() and (alpha < 255).any() or (choke < 0 and (alpha > 0).any()):
@@ -207,11 +240,13 @@ def apply_palette_edits(binned_im, palette, hidden_indices=None, color_overrides
     overrides = dict(color_overrides or {})
     if not hidden and not overrides:
         return binned_im, list(palette)
-    rgba = np.asarray(binned_im.convert("RGBA")).copy()
-    opaque = rgba[..., 3] > 0
+    src = np.asarray(binned_im.convert("RGBA"))
+    rgba = src.copy()
+    opaque = src[..., 3] > 0
     active_palette = []
     for idx, rgb in enumerate(palette):
-        mask = opaque & (rgba[..., 0] == rgb[0]) & (rgba[..., 1] == rgb[1]) & (rgba[..., 2] == rgb[2])
+        # Match against the unedited image, so a recolor that equals a later bin is not edited twice
+        mask = opaque & (src[..., 0] == rgb[0]) & (src[..., 1] == rgb[1]) & (src[..., 2] == rgb[2])
         if idx in hidden:
             rgba[mask] = 0
         else:

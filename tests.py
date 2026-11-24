@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 
 from quickimage import bootstrap
 from quickimage.core.config import ICON_SIZES
+from quickimage.core.filaments import filament_overrides, find_filament, load_catalog, material_filaments, materials
 from quickimage.core.io import load_rgba
 from quickimage.core.ops import (
     apply_crop_options,
@@ -17,6 +18,7 @@ from quickimage.core.ops import (
     content_bbox,
     make_transparent,
     refine_alpha_mask,
+    resize_to_longest,
     transform_image,
 )
 from quickimage.core.pipeline import batch_process, process, render_preview
@@ -290,6 +292,13 @@ def main():
     test_edge_and_mask_refinement()
     test_palette_edits_and_svg()
     test_batch_processing()
+    test_brush_size_on_large_image()
+    test_output_size()
+    test_soft_brush()
+    test_filament_palette()
+    test_palette_edits_do_not_chain()
+    test_batch_output_options()
+    test_brush_cursor_and_keys()
     test_dependencies()
     print("all tests passed")
 
@@ -701,6 +710,295 @@ def test_batch_processing():
             assert out_p.is_file()
             with Image.open(out_p) as out_im:
                 assert out_im.size == (12, 12)
+
+
+
+def test_brush_size_on_large_image():
+    """The brush circle must match the area the stroke affects, also when the preview is a proxy."""
+    im = Image.new("RGBA", (3200, 1600), (200, 40, 40, 255))
+    app = App()
+    app.build_ui()
+    try:
+        app.bw, app.bh = 824, 424  # 800 x 400 usable: 4 source px per canvas px
+        app.load_picture(Path("big.png"), im)
+        assert app.preview_scale < 1.0, "a 3200 px image must be previewed on a proxy"
+        app.opt_mode.set("brush")
+        app.opt_brush_size.set(50)
+        # After a first stroke the live preview shows the downscaled proxy, not the original
+        app.brush_strokes.append(("erase", 50.0, [(100.0, 100.0)]))
+        app.update_live_preview()
+        assert app.last_preview.size == app.preview_src.size, app.last_preview.size
+        ax, _ = app._source_to_canvas(1000.0, 800.0)
+        bx, _ = app._source_to_canvas(1050.0, 800.0)
+        assert abs(app._brush_radius_on_canvas() - abs(bx - ax)) < 0.5, (app._brush_radius_on_canvas(), bx - ax)
+        assert abs(app._brush_radius_on_canvas() - 50 / 4.0) < 0.5, app._brush_radius_on_canvas()
+
+        # The stroke really erases a 50 px radius in source pixels
+        out = refine_alpha_mask(im, brush_strokes=[("erase", 50.0, [(1000.0, 800.0)])])
+        a = np.asarray(out)[..., 3]
+        assert a[800, 1000 + 48] == 0 and a[800, 1000 + 53] == 255
+    finally:
+        app.root.destroy()
+
+
+def make_two_color_object(w=240, h=160):
+    """A red and a blue block on a white background."""
+    arr = np.full((h, w, 4), 255, np.uint8)
+    arr[40:120, 30:110, :3] = (220, 30, 30)
+    arr[40:120, 130:210, :3] = (30, 40, 210)
+    return Image.fromarray(arr, "RGBA")
+
+
+def test_output_size():
+    im = make_two_color_object()
+    assert resize_to_longest(im, 0) is im
+    assert resize_to_longest(im, 120).size == (120, 80)
+    assert resize_to_longest(im, 480).size == (480, 320), "upscaling is allowed"
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "two.png"
+        im.save(src)
+        out, note = process(src, True, True, out_size=100)
+        with Image.open(out) as o:
+            assert max(o.size) == 100, o.size
+        assert "resized to" in note, note
+        # Resizing happens before binning, so the colors stay flat
+        out, _ = process(src, True, False, bin_colors=True, n_colors=2, out_size=97)
+        with Image.open(out) as o:
+            a = np.asarray(o.convert("RGBA"))
+            assert max(o.size) == 97
+            opaque = a[a[..., 3] > 0][:, :3]
+            assert len({tuple(c) for c in opaque}) <= 2, len({tuple(c) for c in opaque})
+        # Icons keep their standard sizes
+        out, _ = process(src, True, True, do_icon=True, out_size=50)
+        with Image.open(out) as o:
+            assert max(o.info.get("sizes", {(256, 256)}))[0] == 256
+        # SVG viewBox follows the export size
+        out, _ = process(src, True, True, do_svg=True, n_colors=2, out_size=60)
+        root = ET.fromstring(Path(out).read_text(encoding="utf-8"))
+        vb = [float(v) for v in root.get("viewBox").split()]
+        assert max(vb[2], vb[3]) == 60, vb
+
+
+def test_soft_brush():
+    im = Image.new("RGBA", (100, 100), (10, 120, 200, 255))
+    hard = np.asarray(refine_alpha_mask(im, brush_strokes=[("erase", 20.0, [(50.0, 50.0)])]))[..., 3]
+    assert hard[50, 50] == 0 and hard[50, 50 + 18] == 0 and hard[50, 50 + 23] == 255
+    # The old 3-value strokes and softness 0 give the same result
+    hard0 = np.asarray(refine_alpha_mask(im, brush_strokes=[("erase", 20.0, [(50.0, 50.0)], 0.0)]))[..., 3]
+    assert (hard == hard0).all()
+    soft = np.asarray(refine_alpha_mask(im, brush_strokes=[("erase", 20.0, [(50.0, 50.0)], 0.5)]))[..., 3]
+    assert soft[50, 50] == 0, "the center is fully erased"
+    assert 0 < soft[50, 50 + 15] < 255, soft[50, 50 + 15]
+    assert soft[50, 50 + 23] == 255, "outside the radius is untouched"
+    assert soft[50, 50 + 17] > soft[50, 50 + 12], "fades toward the edge"
+    # Restoring with a soft brush raises alpha gradually and brings back the original color
+    erased = Image.fromarray(np.dstack([np.asarray(im)[..., :3], np.zeros((100, 100), np.uint8)]), "RGBA")
+    back = np.asarray(
+        refine_alpha_mask(erased, source_im=im, brush_strokes=[("restore", 20.0, [(50.0, 50.0)], 0.5)])
+    )
+    assert back[50, 50, 3] == 255 and tuple(back[50, 50, :3]) == (10, 120, 200)
+    assert 0 < back[50, 65, 3] < 255
+
+
+def test_filament_palette():
+    cat = load_catalog()
+    assert len(cat) > 300 and materials(cat)[0] == "PLA Basic"
+    assert all(len(f["hex"]) == 7 and len(f["rgb"]) == 3 for f in cat)
+    red = find_filament("PLA Basic", "Red")
+    blue = find_filament("PLA Basic", "Blue")
+    white = find_filament("PLA Basic", "Jade White")
+    black = find_filament("PLA Basic", "Black")
+    assert red and blue and white and black
+    # One-to-one: each binned color gets its own nearest filament
+    m = filament_overrides([(30, 40, 210), (220, 30, 30)], [red["rgb"], blue["rgb"]])
+    assert m == {0: blue["rgb"], 1: red["rgb"]}, m
+    # More colors than filaments: the leftovers take the nearest one
+    m = filament_overrides([(250, 250, 250), (5, 5, 5), (240, 240, 235)], [white["rgb"], black["rgb"]])
+    assert m[0] == white["rgb"] and m[1] == black["rgb"] and m[2] == white["rgb"], m
+    # Auto: given a whole material, each color gets its own best-matching filament
+    pla = material_filaments("PLA Basic")
+    assert len({f["rgb"] for f in pla}) == len(pla)
+    auto = filament_overrides([(0, 0, 0), (255, 255, 255), (0, 174, 66)], [f["rgb"] for f in pla])
+    assert auto == {0: black["rgb"], 1: white["rgb"], 2: find_filament("PLA Basic", "Bambu Green")["rgb"]}, auto
+    # Vivid blue stays blue (not Bambu "Purple"), and neutrals stay neutral
+    pf = [f["rgb"] for f in pla]
+    names = {f["rgb"]: f["name"] for f in pla}
+    for col, want in (((30, 40, 210), "Cobalt Blue"), ((0, 0, 255), "Cobalt Blue"), ((20, 20, 20), "Black"),
+                      ((120, 120, 120), "Gray"), ((220, 30, 30), "Red"), ((240, 200, 0), "Sunflower Yellow")):
+        got = names[filament_overrides([col], pf)[0]]
+        assert got == want, (col, got, want)
+    # Pipeline: every opaque pixel is one of the picked filaments
+    fil = [red["rgb"], blue["rgb"]]
+    im = make_two_color_object()
+    out, preview, notes, _ = render_preview(im, True, True, bin_colors=True, n_colors=2, filaments=fil)
+    a = np.asarray(out)
+    colors = {tuple(c) for c in a[a[..., 3] > 0][:, :3]}
+    assert colors <= set(fil) and len(colors) == 2, colors
+    assert any("filament" in n for n in notes), notes
+    # A hand recolor wins over the filament mapping
+    out, _, _, _ = render_preview(
+        im, True, True, bin_colors=True, n_colors=2, filaments=fil, color_overrides={0: (0, 255, 0)}
+    )
+    a = np.asarray(out)
+    assert (0, 255, 0) in {tuple(c) for c in a[a[..., 3] > 0][:, :3]}
+    # SVG export uses the filament colors
+    with tempfile.TemporaryDirectory() as td:
+        src = Path(td) / "two.png"
+        im.save(src)
+        out_svg, _ = process(src, True, True, do_svg=True, n_colors=2, filaments=fil)
+        fills = {el.get("fill").lower() for el in ET.fromstring(Path(out_svg).read_text(encoding="utf-8"))}
+        assert fills == {red["hex"].lower(), blue["hex"].lower()}, fills
+
+
+def test_palette_edits_do_not_chain():
+    arr = np.zeros((4, 4, 4), np.uint8)
+    arr[:, :2] = (200, 0, 0, 255)
+    arr[:, 2:] = (0, 0, 200, 255)
+    im = Image.fromarray(arr, "RGBA")
+    # Recolor bin 0 to bin 1's color, then hide bin 1: bin 0's pixels must stay visible
+    out, active = apply_palette_edits(im, [(200, 0, 0), (0, 0, 200)], hidden_indices={1}, color_overrides={0: (0, 0, 200)})
+    a = np.asarray(out)
+    assert (a[:, :2, 3] == 255).all() and (a[:, 2:, 3] == 0).all()
+    assert active == [(0, 0, 200)]
+
+
+def test_batch_output_options():
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        dest = td_path / "out"
+        paths = []
+        for i in range(2):
+            p = td_path / f"pic_{i}.png"
+            make_two_color_object().save(p)
+            paths.append(p)
+        outputs, errors = batch_process(
+            paths, do_transp=False, do_webp=True, out_dir=dest, suffix="_web", out_size=120
+        )
+        assert not errors, errors
+        names = sorted(o[1].name for o in outputs)
+        assert names == ["pic_0_web.webp", "pic_1_web.webp"], names
+        for _, out_p, _ in outputs:
+            assert out_p.parent == dest
+            with Image.open(out_p) as o:
+                assert o.size == (120, 80)
+                assert np.asarray(o.convert("RGBA"))[0, 0, 3] == 255, "background kept when removal is off"
+        # Running again never overwrites
+        outputs2, _ = batch_process(paths, do_transp=False, do_webp=True, out_dir=dest, suffix="_web")
+        assert sorted(o[1].name for o in outputs2) == ["pic_0_web_2.webp", "pic_1_web_2.webp"]
+        # An empty suffix next to the original never replaces the original
+        outputs3, _ = batch_process(paths[:1], do_transp=True, suffix="")
+        assert outputs3[0][1].name == "pic_0_2.png"
+        # Icons and SVG in a batch
+        outputs4, errors4 = batch_process(paths[:1], do_icon=True, out_dir=dest)
+        assert not errors4 and outputs4[0][1].suffix == ".ico"
+        outputs5, errors5 = batch_process(paths[:1], do_svg=True, bin_colors=True, n_colors=2, out_dir=dest)
+        assert not errors5 and outputs5[0][1].suffix == ".svg"
+
+
+def white_f():
+    return find_filament("PLA Basic", "Jade White")
+
+
+def test_brush_cursor_and_keys():
+    im = make_two_color_object()
+    app = App()
+    app.build_ui()
+    try:
+        app.bw, app.bh = 524, 364
+        app.load_picture(Path("two.png"), im)
+
+        class Ev:
+            def __init__(self, x, y, widget=None):
+                self.x, self.y, self.widget = x, y, widget or app.canvas
+
+        app.on_canvas_motion(Ev(200, 150))
+        assert not app.canvas.find_withtag("brush_cursor"), "no brush cursor outside brush mode"
+        app.opt_mode.set("brush")
+        app._on_mode_change()
+        app.on_canvas_motion(Ev(200, 150))
+        assert len(app.canvas.find_withtag("brush_cursor")) == 1
+        x0, _, x1, _ = app.canvas.coords(app.canvas.find_withtag("brush_cursor")[0])
+        assert abs((x1 - x0) / 2 - app._brush_radius_on_canvas()) < 0.6
+        app.opt_brush_soft.set(50)
+        assert len(app.canvas.find_withtag("brush_cursor")) == 2, "soft brush shows its inner circle"
+        app.opt_brush_size.set(12)
+        assert app._step_brush_size(Ev(0, 0), +1) == "break" and app._get_brush_size() == 14
+        app._step_brush_size(Ev(0, 0), -1)
+        assert app._get_brush_size() == 12
+        assert app._step_brush_size(Ev(0, 0, widget=app.spin_brush_size), +1) is None, "typing in a box is left alone"
+        app.on_canvas_leave()
+        assert not app.canvas.find_withtag("brush_cursor")
+
+        # A stroke records its softness, and the filament option maps the swatches
+        app.on_press(Ev(200, 150))
+        app.on_motion(Ev(230, 150))
+        app.on_release(Ev(240, 150))
+        assert len(app.brush_strokes) == 1 and app.brush_strokes[0][3] == 0.5
+        red, blue = find_filament("PLA Basic", "Red"), find_filament("PLA Basic", "Blue")
+        app.filaments = [red, blue]
+        app.opt_fil_mode.set("manual")
+        app.opt_filaments.set(True)
+        app.opt_bin.set(True)
+        app.opt_colors.set(2)
+        app.update_live_preview()
+        assert {app._shown_swatch_color(i) for i in range(2)} == {red["rgb"], blue["rgb"]}
+        shown = {str(w.cget("background")).upper() for w in app.swatch_frame.winfo_children()}
+        assert shown == {red["hex"], blue["hex"]}, ("swatches must show the filament colors", shown)
+        app._swatch_hover(0)
+        assert "PLA Basic" in app.status.cget("text"), app.status.cget("text")
+        assert "2 picked Bambu filaments" in app._batch_settings_summary()
+
+        # Auto: the best N distinct filaments of the chosen material, N = the color limit
+        app.opt_fil_mode.set("auto")
+        app._on_fil_mode_change()
+        app.opt_colors.set(3)
+        app.update_live_preview()
+        pla = {f["hex"] for f in material_filaments("PLA Basic")}
+        shown = [str(w.cget("background")).upper() for w in app.swatch_frame.winfo_children()]
+        assert len(shown) == 3 and set(shown) <= pla and len(set(shown)) == 3, shown
+        assert "3 best-matching Bambu PLA Basic" in app._batch_settings_summary()
+        assert app.fil_auto_frame.winfo_manager() and not app.fil_manual_frame.winfo_manager()
+        app.opt_fil_material.set("PLA Matte")
+        app._on_fil_material_change()
+        app.update_live_preview()
+        matte = {f["hex"] for f in material_filaments("PLA Matte")}
+        shown = {str(w.cget("background")).upper() for w in app.swatch_frame.winfo_children()}
+        assert shown <= matte, shown
+        # Auto -> Manual keeps Auto's filaments selected (and the hidden swatch), so one can be swapped
+        app.toggle_swatch(0)
+        hidden_before = set(app.hidden_colors)
+        app.opt_fil_mode.set("manual")
+        app._on_fil_mode_change()
+        assert "Click Pick" in app.status.cget("text"), app.status.cget("text")
+        assert app.fil_manual_frame.winfo_manager() and not app.fil_auto_frame.winfo_manager()
+        assert {f["hex"] for f in app.filaments} == shown, (app.filaments, shown)
+        assert all(f["material"] == "PLA Matte" for f in app.filaments)
+        assert app.lbl_fil_picked.cget("text") == "3 picked"
+        assert app.hidden_colors == hidden_before
+        assert {app._shown_swatch_color(i) for i in range(3)} == {tuple(f["rgb"]) for f in app.filaments}
+        # Switching to Auto and back again re-copies Auto's current choice
+        app.opt_fil_mode.set("auto")
+        app._on_fil_mode_change()
+        app.opt_fil_material.set("PLA Basic")
+        app._on_fil_material_change()
+        app.update_live_preview()
+        app.opt_fil_mode.set("manual")
+        app._on_fil_mode_change()
+        assert all(f["material"] == "PLA Basic" for f in app.filaments) and len(app.filaments) == 3
+
+        # The picker's count is the color limit
+        from quickimage.ui.filament_picker import FilamentPicker
+        dlg = FilamentPicker(app.root, app.palette, app.px, count=2, selected=[red, blue, white_f()])
+        assert len(dlg.selected) == 2, "extra picks are trimmed to the color limit"
+        dlg.toggle(find_filament("PLA Basic", "Black"))
+        assert len(dlg.selected) == 2, "cannot pick more than the color limit"
+        dlg.toggle(red)
+        dlg.toggle(find_filament("PLA Basic", "Black"))
+        assert [f["name"] for f in dlg.selected] == ["Blue", "Black"]
+        dlg._ok()
+        assert [f["name"] for f in dlg.result] == ["Blue", "Black"]
+    finally:
+        app.root.destroy()
 
 
 if __name__ == "__main__":

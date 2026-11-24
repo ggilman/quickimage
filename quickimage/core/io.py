@@ -16,11 +16,18 @@ def load_rgba(path):
         im = ImageOps.exif_transpose(src)
         return im.convert("RGBA")
 
-def next_save_path(path, ext=".png"):
-    out = path.with_name(path.stem + f"_icon{ext}")
+
+DEFAULT_SUFFIX = "_icon"
+
+
+def next_save_path(path, ext=".png", out_dir=None, suffix=DEFAULT_SUFFIX):
+    """`<stem><suffix><ext>` next to `path` (or in `out_dir`), numbered so nothing is overwritten."""
+    path = Path(path)
+    folder = Path(out_dir) if out_dir else path.parent
+    out = folder / f"{path.stem}{suffix}{ext}"
     n = 2
     while out.exists():
-        out = path.with_name(path.stem + f"_icon_{n}{ext}")
+        out = folder / f"{path.stem}{suffix}_{n}{ext}"
         n += 1
     return out
 

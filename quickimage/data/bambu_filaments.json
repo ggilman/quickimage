@@ -1,0 +1,1937 @@
+{
+ "source": "https://raw.githubusercontent.com/bambulab/BambuStudio/master/resources/profiles/BBL/filament/filaments_color_codes.json",
+ "filaments": [
+  {
+   "material": "PLA Basic",
+   "name": "Orange",
+   "hex": "#FF6A13",
+   "code": "10300"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Pumpkin Orange",
+   "hex": "#FF9016",
+   "code": "10301"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Blue Gray",
+   "hex": "#5B6579",
+   "code": "10602"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Cobalt Blue",
+   "hex": "#0056B8",
+   "code": "10604"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Turquoise",
+   "hex": "#00B1B7",
+   "code": "10605"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Cyan",
+   "hex": "#0086D6",
+   "code": "10603"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Blue",
+   "hex": "#0A2989",
+   "code": "10601"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Gray",
+   "hex": "#8E9089",
+   "code": "10103"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Silver",
+   "hex": "#A6A9AA",
+   "code": "10102"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Light Gray",
+   "hex": "#D1D3D5",
+   "code": "10104"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Dark Gray",
+   "hex": "#545454",
+   "code": "10105"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Mistletoe Green",
+   "hex": "#3F8E43",
+   "code": "10502"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Bright Green",
+   "hex": "#BECF00",
+   "code": "10503"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Bambu Green",
+   "hex": "#00AE42",
+   "code": "10501"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "10101"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Brown",
+   "hex": "#9D432C",
+   "code": "10800"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Cocoa Brown",
+   "hex": "#6F5034",
+   "code": "10802"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Beige",
+   "hex": "#F7E6DE",
+   "code": "10201"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Pink",
+   "hex": "#F55A74",
+   "code": "10203"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Indigo Purple",
+   "hex": "#482960",
+   "code": "10701"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Purple",
+   "hex": "#5E43B7",
+   "code": "10700"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Magenta",
+   "hex": "#EC008C",
+   "code": "10202"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Red",
+   "hex": "#C12E1F",
+   "code": "10200"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Maroon Red",
+   "hex": "#9D2235",
+   "code": "10205"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Hot Pink",
+   "hex": "#F5547C",
+   "code": "10204"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Jade White",
+   "hex": "#FFFFFF",
+   "code": "10100"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Yellow",
+   "hex": "#F4EE2A",
+   "code": "10400"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Sunflower Yellow",
+   "hex": "#FEC600",
+   "code": "10402"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Bronze",
+   "hex": "#847D48",
+   "code": "10801"
+  },
+  {
+   "material": "PLA Basic",
+   "name": "Gold",
+   "hex": "#E4BD68",
+   "code": "10401"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Mandarin Orange",
+   "hex": "#F99963",
+   "code": "11300"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Sky Blue",
+   "hex": "#56B7E6",
+   "code": "11603"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Marine Blue",
+   "hex": "#0078BF",
+   "code": "11600"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Ice Blue",
+   "hex": "#A3D8E1",
+   "code": "11601"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Dark Blue",
+   "hex": "#042F56",
+   "code": "11602"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Nardo Gray",
+   "hex": "#757575",
+   "code": "11104"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Ash Gray",
+   "hex": "#9B9EA0",
+   "code": "11102"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Apple Green",
+   "hex": "#C2E189",
+   "code": "11502"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Grass Green",
+   "hex": "#61C680",
+   "code": "11500"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Dark Green",
+   "hex": "#68724D",
+   "code": "11501"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Charcoal",
+   "hex": "#000000",
+   "code": "11101"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Dark Chocolate",
+   "hex": "#4D3324",
+   "code": "11802"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Latte Brown",
+   "hex": "#D3B7A7",
+   "code": "11800"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Dark Brown",
+   "hex": "#7D6556",
+   "code": "11801"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Caramel",
+   "hex": "#AE835B",
+   "code": "11803"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Sakura Pink",
+   "hex": "#E8AFCF",
+   "code": "11201"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Lilac Purple",
+   "hex": "#AE96D4",
+   "code": "11700"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Scarlet Red",
+   "hex": "#DE4343",
+   "code": "11200"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Terracotta",
+   "hex": "#B15533",
+   "code": "11203"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Plum",
+   "hex": "#950051",
+   "code": "11204"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Dark Red",
+   "hex": "#BB3D43",
+   "code": "11202"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Ivory White",
+   "hex": "#FFFFFF",
+   "code": "11100"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Bone White",
+   "hex": "#CBC6B8",
+   "code": "11103"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Lemon Yellow",
+   "hex": "#F7D959",
+   "code": "11400"
+  },
+  {
+   "material": "PLA Matte",
+   "name": "Desert Tan",
+   "hex": "#E8DBB7",
+   "code": "11401"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Blue",
+   "hex": "#147BD1",
+   "code": "13601"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Silver",
+   "hex": "#EAECEB",
+   "code": "13104"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Green",
+   "hex": "#4CE4A0",
+   "code": "13502"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Copper",
+   "hex": "#5E4B3C",
+   "code": "13300"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Pink",
+   "hex": "#EEB1C1",
+   "code": "13202"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Purple",
+   "hex": "#854CE4",
+   "code": "13701"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "13105"
+  },
+  {
+   "material": "PLA Silk",
+   "name": "Gold",
+   "hex": "#E5B03D",
+   "code": "13401"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Baby Blue",
+   "hex": "#A8C6EE",
+   "code": "13603"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Blue",
+   "hex": "#008BDA",
+   "code": "13604"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Titan Gray",
+   "hex": "#5F6367",
+   "code": "13108"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Silver",
+   "hex": "#C8C8C8",
+   "code": "13109"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Candy Green",
+   "hex": "#018814",
+   "code": "13506"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Mint",
+   "hex": "#96DCB9",
+   "code": "13507"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Purple",
+   "hex": "#8671CB",
+   "code": "13702"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Candy Red",
+   "hex": "#D02727",
+   "code": "13205"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Rose Gold",
+   "hex": "#BA9594",
+   "code": "13206"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Pink",
+   "hex": "#F7ADA6",
+   "code": "13207"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "13110"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Champagne",
+   "hex": "#F3CFB2",
+   "code": "13404"
+  },
+  {
+   "material": "PLA Silk+",
+   "name": "Gold",
+   "hex": "#F4A925",
+   "code": "13405"
+  },
+  {
+   "material": "PLA Marble",
+   "name": "White Marble",
+   "hex": "#F7F3F0",
+   "code": "13103"
+  },
+  {
+   "material": "PLA Marble",
+   "name": "Red Granite",
+   "hex": "#AD4E38",
+   "code": "13201"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Royal Purple Sparkle",
+   "hex": "#483D8B",
+   "code": "13700"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Slate Gray Sparkle",
+   "hex": "#8E9089",
+   "code": "13102"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Alpine Green Sparkle",
+   "hex": "#3F5443",
+   "code": "13501"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Onyx Black Sparkle",
+   "hex": "#2D2B28",
+   "code": "13101"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Crimson Red Sparkle",
+   "hex": "#792B36",
+   "code": "13200"
+  },
+  {
+   "material": "PLA Sparkle",
+   "name": "Classic Gold Sparkle",
+   "hex": "#CEA629",
+   "code": "13402"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Orange",
+   "hex": "#FF7F41",
+   "code": "12300"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Light Blue",
+   "hex": "#0085AD",
+   "code": "12600"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Lavender Blue",
+   "hex": "#6667AB",
+   "code": "12700"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Gray",
+   "hex": "#515A6C",
+   "code": "12102"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Silver",
+   "hex": "#898D8D",
+   "code": "12103"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Pine Green",
+   "hex": "#00482B",
+   "code": "12500"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Black",
+   "hex": "#25282A",
+   "code": "12101"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Vermilion Red",
+   "hex": "#DD3C22",
+   "code": "12200"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "White",
+   "hex": "#F9F7F4",
+   "code": "12100"
+  },
+  {
+   "material": "PLA Tough",
+   "name": "Yellow",
+   "hex": "#FEDB00",
+   "code": "12400"
+  },
+  {
+   "material": "PLA Aero",
+   "name": "Gray",
+   "hex": "#CDCECA",
+   "code": "14104"
+  },
+  {
+   "material": "PLA Aero",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "14103"
+  },
+  {
+   "material": "PLA Aero",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "14102"
+  },
+  {
+   "material": "PLA Glow",
+   "name": "Glow Orange",
+   "hex": "#FF9D5B",
+   "code": "15300"
+  },
+  {
+   "material": "PLA Glow",
+   "name": "Glow Blue",
+   "hex": "#7AC0E9",
+   "code": "15600"
+  },
+  {
+   "material": "PLA Glow",
+   "name": "Glow Green",
+   "hex": "#A1FFAC",
+   "code": "15500"
+  },
+  {
+   "material": "PLA Glow",
+   "name": "Glow Pink",
+   "hex": "#F17B8F",
+   "code": "15200"
+  },
+  {
+   "material": "PLA Glow",
+   "name": "Glow Yellow",
+   "hex": "#F8FF80",
+   "code": "15400"
+  },
+  {
+   "material": "PLA Dynamic",
+   "name": "UV Color Changing - White to Coral",
+   "hex": "#FFFFFF",
+   "code": "15100"
+  },
+  {
+   "material": "PLA Galaxy",
+   "name": "Purple",
+   "hex": "#594177",
+   "code": "13602"
+  },
+  {
+   "material": "PLA Galaxy",
+   "name": "Green",
+   "hex": "#3B665E",
+   "code": "13503"
+  },
+  {
+   "material": "PLA Galaxy",
+   "name": "Nebulae",
+   "hex": "#424379",
+   "code": "13504"
+  },
+  {
+   "material": "PLA Galaxy",
+   "name": "Brown",
+   "hex": "#684A43",
+   "code": "13203"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "Classic Birch",
+   "hex": "#918669",
+   "code": "13505"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "Black Walnut",
+   "hex": "#4F3F24",
+   "code": "13107"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "Clay Brown",
+   "hex": "#995F11",
+   "code": "13801"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "Rosewood",
+   "hex": "#4C241C",
+   "code": "13204"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "White Oak",
+   "hex": "#D6CCA3",
+   "code": "13106"
+  },
+  {
+   "material": "PLA Wood",
+   "name": "Ochre Yellow",
+   "hex": "#C98935",
+   "code": "13403"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Royal Blue",
+   "hex": "#2842AD",
+   "code": "14601"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Jeans Blue",
+   "hex": "#6E88BC",
+   "code": "14600"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Lava Gray",
+   "hex": "#4D5054",
+   "code": "14101"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Matcha Green",
+   "hex": "#5C9748",
+   "code": "14500"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "14100"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Iris Purple",
+   "hex": "#69398E",
+   "code": "14700"
+  },
+  {
+   "material": "PLA-CF",
+   "name": "Burgundy Red",
+   "hex": "#951E23",
+   "code": "14200"
+  },
+  {
+   "material": "ABS",
+   "name": "Orange",
+   "hex": "#FF6A13",
+   "code": "40300"
+  },
+  {
+   "material": "ABS",
+   "name": "Blue",
+   "hex": "#0A2CA5",
+   "code": "40600"
+  },
+  {
+   "material": "ABS",
+   "name": "Azure",
+   "hex": "#489FDF",
+   "code": "40601"
+  },
+  {
+   "material": "ABS",
+   "name": "Navy Blue",
+   "hex": "#0C2340",
+   "code": "40602"
+  },
+  {
+   "material": "ABS",
+   "name": "Mint",
+   "hex": "#7AE1BF",
+   "code": "40501"
+  },
+  {
+   "material": "ABS",
+   "name": "Silver",
+   "hex": "#87909A",
+   "code": "40102"
+  },
+  {
+   "material": "ABS",
+   "name": "Bambu Green",
+   "hex": "#00AE42",
+   "code": "40500"
+  },
+  {
+   "material": "ABS",
+   "name": "Olive",
+   "hex": "#789D4A",
+   "code": "40502"
+  },
+  {
+   "material": "ABS",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "40101"
+  },
+  {
+   "material": "ABS",
+   "name": "Lavender",
+   "hex": "#7248BD",
+   "code": "40701"
+  },
+  {
+   "material": "ABS",
+   "name": "Purple",
+   "hex": "#AF1685",
+   "code": "40700"
+  },
+  {
+   "material": "ABS",
+   "name": "Red",
+   "hex": "#D32941",
+   "code": "40200"
+  },
+  {
+   "material": "ABS",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "40100"
+  },
+  {
+   "material": "ABS",
+   "name": "Yellow",
+   "hex": "#FCE900",
+   "code": "40400"
+  },
+  {
+   "material": "ABS",
+   "name": "Tangerine Yellow",
+   "hex": "#FFC72C",
+   "code": "40402"
+  },
+  {
+   "material": "ABS",
+   "name": "Beige",
+   "hex": "#DFD1A7",
+   "code": "40401"
+  },
+  {
+   "material": "ASA",
+   "name": "Blue",
+   "hex": "#2140B4",
+   "code": "45600"
+  },
+  {
+   "material": "ASA",
+   "name": "Gray",
+   "hex": "#8A949E",
+   "code": "45102"
+  },
+  {
+   "material": "ASA",
+   "name": "Green",
+   "hex": "#00A6A0",
+   "code": "45500"
+  },
+  {
+   "material": "ASA",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "45101"
+  },
+  {
+   "material": "ASA",
+   "name": "Red",
+   "hex": "#E02928",
+   "code": "45200"
+  },
+  {
+   "material": "ASA",
+   "name": "White",
+   "hex": "#FFFAF2",
+   "code": "45100"
+  },
+  {
+   "material": "ASA Aero",
+   "name": "White",
+   "hex": "#F5F1DD",
+   "code": "46100"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Orange",
+   "hex": "#F48438",
+   "code": "41300"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Blue",
+   "hex": "#0C3B95",
+   "code": "41600"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Gray",
+   "hex": "#C6C6C6",
+   "code": "41102"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Green",
+   "hex": "#61BF36",
+   "code": "41500"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "41101"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Red",
+   "hex": "#E83100",
+   "code": "41200"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "41100"
+  },
+  {
+   "material": "ABS-GF",
+   "name": "Yellow",
+   "hex": "#FFE133",
+   "code": "41400"
+  },
+  {
+   "material": "ASA-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "46101"
+  },
+  {
+   "material": "PC",
+   "name": "Clear Black",
+   "hex": "#686865",
+   "code": "60102"
+  },
+  {
+   "material": "PC",
+   "name": "Transparent",
+   "hex": "#000000",
+   "code": "60103"
+  },
+  {
+   "material": "PC",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "60101"
+  },
+  {
+   "material": "PC",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "60100"
+  },
+  {
+   "material": "PC FR",
+   "name": "Gray",
+   "hex": "#A8A8AA",
+   "code": "63102"
+  },
+  {
+   "material": "PC FR",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "63100"
+  },
+  {
+   "material": "PC FR",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "63101"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Orange",
+   "hex": "#FF911A",
+   "code": "32300"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Light Blue",
+   "hex": "#61B0FF",
+   "code": "32600"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Clear",
+   "hex": "#000000",
+   "code": "32101"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Gray",
+   "hex": "#8E8E8E",
+   "code": "32100"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Olive",
+   "hex": "#748C45",
+   "code": "32500"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Teal",
+   "hex": "#77EDD7",
+   "code": "32501"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Brown",
+   "hex": "#C9A381",
+   "code": "32800"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Purple",
+   "hex": "#D6ABFF",
+   "code": "32700"
+  },
+  {
+   "material": "PETG Translucent",
+   "name": "Translucent Pink",
+   "hex": "#F9C1BD",
+   "code": "32200"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Orange",
+   "hex": "#F75403",
+   "code": "33300"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Blue",
+   "hex": "#002E96",
+   "code": "33600"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Lake Blue",
+   "hex": "#1F79E5",
+   "code": "33601"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Gray",
+   "hex": "#ADB1B2",
+   "code": "33101"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Dark Gray",
+   "hex": "#515151",
+   "code": "33103"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Green",
+   "hex": "#00AE42",
+   "code": "33500"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Lime Green",
+   "hex": "#6EE53C",
+   "code": "33501"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Forest Green",
+   "hex": "#39541A",
+   "code": "33502"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "33102"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Peanut Brown",
+   "hex": "#875718",
+   "code": "33801"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Red",
+   "hex": "#BC0900",
+   "code": "33200"
+  },
+  {
+   "material": "PETG HF",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "33100"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Yellow",
+   "hex": "#FFD00B",
+   "code": "33400"
+  },
+  {
+   "material": "PETG HF",
+   "name": "Cream",
+   "hex": "#F9DFB9",
+   "code": "33401"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Indigo Blue",
+   "hex": "#324585",
+   "code": "31600"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Titan Gray",
+   "hex": "#565656",
+   "code": "31101"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Malachite Green",
+   "hex": "#16B08E",
+   "code": "31500"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "31100"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Violet Purple",
+   "hex": "#583061",
+   "code": "31700"
+  },
+  {
+   "material": "PETG-CF",
+   "name": "Brick Red",
+   "hex": "#9F332A",
+   "code": "31200"
+  },
+  {
+   "material": "PAHT-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "70100"
+  },
+  {
+   "material": "PA6-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "72100"
+  },
+  {
+   "material": "PPA-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "73100"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Blue",
+   "hex": "#75AED8",
+   "code": "72600"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "White",
+   "hex": "#EAEAE4",
+   "code": "72102"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Gray",
+   "hex": "#353533",
+   "code": "72103"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Lime",
+   "hex": "#C5ED48",
+   "code": "72500"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "72104"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Brown",
+   "hex": "#5B492F",
+   "code": "72800"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Orange",
+   "hex": "#FF4800",
+   "code": "72200"
+  },
+  {
+   "material": "PA6-GF",
+   "name": "Yellow",
+   "hex": "#FFCE00",
+   "code": "72400"
+  },
+  {
+   "material": "Support for PA/PET",
+   "name": "Green",
+   "hex": "#C0DF16",
+   "code": "65500"
+  },
+  {
+   "material": "PVA",
+   "name": "Clear",
+   "hex": "#F0F1A8",
+   "code": "66400"
+  },
+  {
+   "material": "Support for PLA/PETG",
+   "name": "Nature",
+   "hex": "#000000",
+   "code": "65102"
+  },
+  {
+   "material": "Support for PLA/PETG",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "65103"
+  },
+  {
+   "material": "Support for ABS",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "66100"
+  },
+  {
+   "material": "PET-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "71100"
+  },
+  {
+   "material": "PPS-CF",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "76100"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "Blue",
+   "hex": "#0072CE",
+   "code": "51600"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "Gray",
+   "hex": "#898D8D",
+   "code": "51101"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "Black",
+   "hex": "#101820",
+   "code": "51100"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "Red",
+   "hex": "#C8102E",
+   "code": "51200"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "51102"
+  },
+  {
+   "material": "TPU 95A HF",
+   "name": "Yellow",
+   "hex": "#F3E600",
+   "code": "51400"
+  },
+  {
+   "material": "TPU 95A",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "50101"
+  },
+  {
+   "material": "TPU 95A",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "50100"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Blue",
+   "hex": "#5898DD",
+   "code": "53600"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Gray",
+   "hex": "#939393",
+   "code": "53102"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Neon Green",
+   "hex": "#90FF1A",
+   "code": "53500"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "53101"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Red",
+   "hex": "#ED0000",
+   "code": "53200"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "53100"
+  },
+  {
+   "material": "TPU for AMS",
+   "name": "Yellow",
+   "hex": "#F9EF41",
+   "code": "53400"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "16100"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Yellow",
+   "hex": "#EFE255",
+   "code": "16400"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "16103"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Cyan",
+   "hex": "#4DAFDA",
+   "code": "16600"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Red",
+   "hex": "#C6001A",
+   "code": "16200"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Gray",
+   "hex": "#999D9D",
+   "code": "16101"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Red",
+   "hex": "#B50011",
+   "code": "13210"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Cherry Pink",
+   "hex": "#F5B6CD",
+   "code": "13211"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Orange",
+   "hex": "#F74E02",
+   "code": "13301"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Mellow Yellow",
+   "hex": "#F5DBAB",
+   "code": "13410"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Light Jade",
+   "hex": "#96D8AF",
+   "code": "13510"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Ice Blue",
+   "hex": "#B8CDE9",
+   "code": "13610"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Blue",
+   "hex": "#0047BB",
+   "code": "13611"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Teal",
+   "hex": "#009FA1",
+   "code": "13612"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Purple",
+   "hex": "#8344B0",
+   "code": "13710"
+  },
+  {
+   "material": "PLA Translucent",
+   "name": "Lavender",
+   "hex": "#B8ACD6",
+   "code": "13711"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "51103"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "51105"
+  },
+  {
+   "material": "TPU 85A",
+   "name": "Neon Orange",
+   "hex": "#F68B1B",
+   "code": "51305"
+  },
+  {
+   "material": "TPU 85A",
+   "name": "Light Cyan",
+   "hex": "#C3E2D6",
+   "code": "51500"
+  },
+  {
+   "material": "Support for PLA",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "65104"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "12104"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Gray",
+   "hex": "#AFB1AE",
+   "code": "12105"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Silver",
+   "hex": "#959698",
+   "code": "12106"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "12107"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Orange",
+   "hex": "#DC3A27",
+   "code": "12301"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Yellow",
+   "hex": "#F4D53F",
+   "code": "12401"
+  },
+  {
+   "material": "PLA Tough+",
+   "name": "Cyan",
+   "hex": "#009BD8",
+   "code": "12601"
+  },
+  {
+   "material": "PLA Metal",
+   "name": "Iron Gray Metallic",
+   "hex": "#43403D",
+   "code": "13100"
+  },
+  {
+   "material": "PLA Metal",
+   "name": "Iridium Gold Metallic",
+   "hex": "#B39B84",
+   "code": "13400"
+  },
+  {
+   "material": "PLA Metal",
+   "name": "Oxide Green Metallic",
+   "hex": "#1D7C6A",
+   "code": "13500"
+  },
+  {
+   "material": "PLA Metal",
+   "name": "Cobalt Blue Metallic",
+   "hex": "#39699E",
+   "code": "13600"
+  },
+  {
+   "material": "PLA Metal",
+   "name": "Copper Brown Metallic",
+   "hex": "#AA6443",
+   "code": "13800"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Blue",
+   "hex": "#004EA8",
+   "code": "16601"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Sunflower Yellow",
+   "hex": "#FFB549",
+   "code": "16401"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Green",
+   "hex": "#00BB31",
+   "code": "16501"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Orange",
+   "hex": "#FF671F",
+   "code": "16301"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Matte Beige",
+   "hex": "#ECC3B2",
+   "code": "16700"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Cocoa Brown",
+   "hex": "#745335",
+   "code": "16800"
+  },
+  {
+   "material": "PLA Lite",
+   "name": "Dark Gray",
+   "hex": "#8C8B8C",
+   "code": "16102"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "Crystal Blue",
+   "hex": "#7EB4E1",
+   "code": "51601"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "Quicksilver",
+   "hex": "#9EA2A2",
+   "code": "51106"
+  },
+  {
+   "material": "TPU 85A",
+   "name": "Rose Beige/Flesh",
+   "hex": "#F3CFB2",
+   "code": "51201"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "Grape Jelly",
+   "hex": "#D6ABFF",
+   "code": "51700"
+  },
+  {
+   "material": "TPU 85A",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "51107"
+  },
+  {
+   "material": "TPU 85A",
+   "name": "Lime Green",
+   "hex": "#CDEA80",
+   "code": "51501"
+  },
+  {
+   "material": "TPU 90A",
+   "name": "Cocoa Brown",
+   "hex": "#5C4738",
+   "code": "51800"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "30105"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "30106"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Gray",
+   "hex": "#7F7E83",
+   "code": "30107"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Yellow",
+   "hex": "#FCE300",
+   "code": "30402"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Red",
+   "hex": "#D6001C",
+   "code": "30201"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Reflex Blue",
+   "hex": "#001489",
+   "code": "30603"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Dark Brown",
+   "hex": "#4F2C1D",
+   "code": "30800"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Green",
+   "hex": "#009639",
+   "code": "30502"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Orange",
+   "hex": "#FF671F",
+   "code": "30301"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Pine Green",
+   "hex": "#034638",
+   "code": "30503"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Navy Blue",
+   "hex": "#0086D6",
+   "code": "30604"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Misty Blue",
+   "hex": "#688197",
+   "code": "30108"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Dark Beige",
+   "hex": "#DBC8B6",
+   "code": "30403"
+  },
+  {
+   "material": "PLA Pure",
+   "name": "Pure White",
+   "hex": "#FFFFFF",
+   "code": "17100"
+  },
+  {
+   "material": "PLA Pure",
+   "name": "Absolute Black",
+   "hex": "#000000",
+   "code": "17101"
+  },
+  {
+   "material": "PLA Pure",
+   "name": "Milky Pink",
+   "hex": "#F7CED7",
+   "code": "17200"
+  },
+  {
+   "material": "PLA Pure",
+   "name": "Baby Blue",
+   "hex": "#A4DBE8",
+   "code": "17600"
+  },
+  {
+   "material": "PLA Pure",
+   "name": "Apricot",
+   "hex": "#FFB673",
+   "code": "17300"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "56100"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Purple",
+   "hex": "#8A75D1",
+   "code": "30701"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Sunflower Yellow",
+   "hex": "#FFB81C",
+   "code": "30404"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Bright Green",
+   "hex": "#97D700",
+   "code": "30504"
+  },
+  {
+   "material": "PETG Basic",
+   "name": "Hot Pink",
+   "hex": "#F277C6",
+   "code": "30702"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "35100"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Black",
+   "hex": "#000000",
+   "code": "35101"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Lime",
+   "hex": "#C0DF16",
+   "code": "35500"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Gray",
+   "hex": "#7F7E83",
+   "code": "35102"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Pink",
+   "hex": "#FABBCB",
+   "code": "35700"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Baby Blue",
+   "hex": "#B9D9EB",
+   "code": "35600"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Rose Beige",
+   "hex": "#F0BDA5",
+   "code": "35701"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Violet",
+   "hex": "#A7A4E0",
+   "code": "35702"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Avocado Green",
+   "hex": "#BCE194",
+   "code": "35501"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Yellow",
+   "hex": "#FFD100",
+   "code": "35400"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Dark Blue",
+   "hex": "#003087",
+   "code": "35602"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Cyan",
+   "hex": "#00A9E0",
+   "code": "35601"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Red",
+   "hex": "#D6001C",
+   "code": "35200"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Orange",
+   "hex": "#FF671F",
+   "code": "35300"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Turquoise",
+   "hex": "#00C7B1",
+   "code": "35603"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Hot Pink",
+   "hex": "#EF4A81",
+   "code": "35703"
+  },
+  {
+   "material": "PETG Matte",
+   "name": "Caramel",
+   "hex": "#BF9474",
+   "code": "35801"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Lemon Yellow",
+   "hex": "#FBDB65",
+   "code": "56400"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Dark Ivory",
+   "hex": "#F1E6B2",
+   "code": "56401"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Dark Green",
+   "hex": "#617354",
+   "code": "56500"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Grass Green",
+   "hex": "#7CCC6C",
+   "code": "56501"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Mandarin Orange",
+   "hex": "#FFA06A",
+   "code": "56300"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Purple",
+   "hex": "#AD96DC",
+   "code": "56700"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Pink",
+   "hex": "#FABBCB",
+   "code": "56701"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Red",
+   "hex": "#E4002B",
+   "code": "56200"
+  },
+  {
+   "material": "TPU 75A (2.85mm)",
+   "name": "Cyan",
+   "hex": "#00A3E1",
+   "code": "56600"
+  },
+  {
+   "material": "PLA Palette",
+   "name": "Cyan",
+   "hex": "#0090DA",
+   "code": "18600"
+  },
+  {
+   "material": "PLA Palette",
+   "name": "Magenta",
+   "hex": "#E24585",
+   "code": "18200"
+  },
+  {
+   "material": "PLA Palette",
+   "name": "Yellow",
+   "hex": "#FCE300",
+   "code": "18400"
+  },
+  {
+   "material": "PLA Palette",
+   "name": "White",
+   "hex": "#FFFFFF",
+   "code": "18100"
+  },
+  {
+   "material": "PLA Palette",
+   "name": "Key",
+   "hex": "#000000",
+   "code": "18101"
+  }
+ ]
+}
