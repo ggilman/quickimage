@@ -591,7 +591,7 @@ def seed_bg_mask(a, seeds, tol, analysis=None):
     return mask, dist_map, bg_ref
 
 
-def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None):
+def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None, use_border=True):
     """Return (bg_mask, dist_field, bg_color_field, eff_tol) for image array `a`.
 
     The returned dist/bg_color arrays may be shared cache entries: treat them as read-only.
@@ -599,7 +599,13 @@ def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None):
     an = get_analysis(a)
     bg_field, dist = an.bg_field, an.dist
     eff_tol = float(tol) + min(18.0, an.noise_mad * 0.75)
-    vis = border_bg_mask(dist, eff_tol)
+    if use_border:
+        vis = border_bg_mask(dist, eff_tol)
+    else:
+        h, w = a.shape[:2]
+        vis = np.zeros((h, w), dtype=bool)
+        dist = np.full((h, w), np.inf, dtype=np.float32)
+        bg_field = np.zeros((h, w, 3), dtype=np.float32)
 
     if seeds:
         s_mask, s_dist, s_bg = seed_bg_mask(a, seeds, eff_tol, analysis=an)
@@ -833,24 +839,37 @@ def load_rgba(path):
         return im.convert("RGBA")
 
 
-def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None):
+def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None, use_border=True):
     """Make the background transparent.
 
-    Without `lasso`: background = colors matching the image border (plus picked `seeds`).
-    With `lasso`: only the object inside the outline is kept (GrabCut); seeds are background hints.
+    Without `lasso`: background = colors matching the image border (when `use_border` is True)
+    plus picked `seeds`.
+    With `lasso`: only the object inside the outline is kept (GrabCut); when `use_border` is True
+    `seeds` are GrabCut background hints, otherwise `seeds` also delete clicked colors.
     """
     im = im.convert("RGBA")
     a_u8 = np.asarray(im)
+    notes = []
     if lasso:
-        alpha_f, bg_col, note = get_lasso_mask(a_u8[..., :3], lasso, bg_hints=seeds, remove_holes=remove_holes)
+        hints = seeds if use_border else None
+        alpha_f, bg_col, note = get_lasso_mask(a_u8[..., :3], lasso, bg_hints=hints, remove_holes=remove_holes)
+        if note:
+            notes.append(note)
         alpha = np.minimum(a_u8[..., 3], np.round(alpha_f * 255.0)).astype(np.uint8)
         rgb_out = a_u8[..., :3].astype(np.float32)
         _decontaminate_local(rgb_out, alpha, fallback_bg=bg_col)
-        return Image.fromarray(np.dstack([rgb_out.astype(np.uint8), alpha])), note
+        a_u8 = np.dstack([rgb_out.astype(np.uint8), alpha])
+        im = Image.fromarray(a_u8)
+        if use_border or not seeds:
+            return im, ("; ".join(notes) if notes else None)
+    if not use_border and not seeds:
+        return im, None
     if (a_u8[..., 3] < 255).any() and not seeds:
         return im, "already transparent"
     a = a_u8.astype(np.int16)
-    vis, dist, bg_field, eff_tol = compute_bg_selection(a, tol=tol, remove_holes=remove_holes, seeds=seeds)
+    vis, dist, bg_field, eff_tol = compute_bg_selection(
+        a, tol=tol, remove_holes=remove_holes, seeds=seeds, use_border=use_border
+    )
     if vis.mean() > MAX_BG_FRAC:
         return im, "looks all background - removal skipped"
     if not vis.any():
@@ -878,16 +897,18 @@ def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None)
     rgb_out = _decontaminate(a_u8[:, :, :3].astype(np.float32), alpha, bg_field, fringe_zone)
 
     out = np.dstack([rgb_out.astype(np.uint8), alpha])
-    return Image.fromarray(out), None
+    return Image.fromarray(out), ("; ".join(notes) if notes else None)
 
 
-def content_bbox(im, tol=BG_TOL, remove_holes=False, seeds=None):
+def content_bbox(im, tol=BG_TOL, remove_holes=False, seeds=None, use_border=True):
     a_u8 = np.asarray(im.convert("RGBA"))
     if (a_u8[..., 3] < 255).any():
         fg = a_u8[..., 3] > 16
     else:
         a = a_u8.astype(np.int16)
-        vis, dist, _, eff_tol = compute_bg_selection(a, tol=tol, remove_holes=remove_holes, seeds=seeds)
+        vis, dist, _, eff_tol = compute_bg_selection(
+            a, tol=tol, remove_holes=remove_holes, seeds=seeds, use_border=use_border
+        )
         if vis.any():
             fg = ~vis & (dist > eff_tol)
         else:
@@ -1328,6 +1349,7 @@ def render_preview(
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
+    use_border=True,
 ):
     """Run transparency/crop/binning/icon steps in-memory without writing files.
 
@@ -1342,7 +1364,9 @@ def render_preview(
     if lasso:
         notes.append("outline mode")
     if do_transp:
-        im, note = make_transparent(im, tol=tol, remove_holes=remove_holes, seeds=seeds, lasso=lasso)
+        im, note = make_transparent(
+            im, tol=tol, remove_holes=remove_holes, seeds=seeds, lasso=lasso, use_border=use_border
+        )
         if note:
             notes.append(note)
     if do_crop:
@@ -1351,7 +1375,7 @@ def render_preview(
             alpha_f, _, _ = get_lasso_mask(np.asarray(im.convert("RGB")), lasso, remove_holes=remove_holes)
             box = _mask_bbox(alpha_f > 16 / 255.0)
         else:
-            box = content_bbox(im, tol=tol, remove_holes=remove_holes, seeds=seeds)
+            box = content_bbox(im, tol=tol, remove_holes=remove_holes, seeds=seeds, use_border=use_border)
         if box and box != (0, 0, im.width, im.height):
             crop_box = box
             im = im.crop(box)
@@ -1377,6 +1401,7 @@ def _process_with_preview(
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
+    use_border=True,
 ):
     path = Path(path)
     im = load_rgba(path)
@@ -1391,6 +1416,7 @@ def _process_with_preview(
         bin_colors=bool(bin_colors and not do_svg),  # SVG bins below, exactly once
         n_colors=n_colors,
         lasso=lasso,
+        use_border=use_border,
     )
     if do_svg:
         binned, palette = quantize_foreground_colors(im, n_colors=n_colors)
@@ -1421,6 +1447,7 @@ def process(
     bin_colors=False,
     n_colors=DEFAULT_SVG_COLORS,
     lasso=None,
+    use_border=True,
 ):
     out, note, _, _ = _process_with_preview(
         path,
@@ -1434,6 +1461,7 @@ def process(
         bin_colors=bin_colors,
         n_colors=n_colors,
         lasso=lasso,
+        use_border=use_border,
     )
     return out, note
 
@@ -1533,6 +1561,8 @@ class App:
         self.root.minsize(self.px(900), self.px(600))
         self.root.bind("<Escape>", lambda _e: self.cancel_drag())
         self.root.bind("<Control-o>", lambda _e: self.open_dialog())
+        self.root.bind("<Control-z>", self.undo)
+        self.root.bind("<Control-Z>", self.undo)
         self.root.bind("<KeyPress-space>", self.compare_start)
         self.root.bind("<KeyRelease-space>", self.compare_end)
 
@@ -1550,6 +1580,7 @@ class App:
         self.last_output = None  # most recent exported file (for "Show in folder")
         self.seeds = []
         self.lasso = []  # outline around one object, in full-resolution source pixels
+        self._history = []  # stack of (seeds, lasso) snapshots for Ctrl+Z undo
         self._drag = None  # canvas points of the outline being drawn
         self._drag_far = False  # the press moved enough to be a drag, not a click
         self._preview_job = None
@@ -1599,7 +1630,7 @@ class App:
         root.columnconfigure(0, weight=1)
         root.rowconfigure(0, weight=1)
 
-        self.opt_transp = tkinter.BooleanVar(value=False)
+        self.opt_mode = tkinter.StringVar(value="color")
         self.opt_holes = tkinter.BooleanVar(value=False)
         self.opt_crop = tkinter.BooleanVar(value=False)
         self.opt_bin = tkinter.BooleanVar(value=False)
@@ -1663,15 +1694,27 @@ class App:
             widget.grid(row=row, column=0, sticky=kw.pop("sticky", "w"), **kw)
             row += 1
 
-        section("Background", first=True)
-        self.chk_t = ttk.Checkbutton(
-            side, variable=self.opt_transp, text="Make background transparent", command=self.schedule_live_preview
+        section("Mode", first=True)
+        self.rad_color = ttk.Radiobutton(
+            side,
+            variable=self.opt_mode,
+            value="color",
+            text="Delete clicked color",
+            command=self._on_mode_change,
         )
-        place(self.chk_t, pady=(0, P(2)))
+        place(self.rad_color, pady=(0, P(2)))
+        self.rad_outline = ttk.Radiobutton(
+            side,
+            variable=self.opt_mode,
+            value="outline",
+            text="Outline object to keep",
+            command=self._on_mode_change,
+        )
+        place(self.rad_outline, pady=(0, P(6)))
         self.chk_h = ttk.Checkbutton(
             side, variable=self.opt_holes, text="Remove interior holes", command=self.schedule_live_preview
         )
-        place(self.chk_h, padx=(P(28), 0), pady=(0, P(8)))
+        place(self.chk_h, pady=(0, P(8)))
         tol_row = ttk.Frame(side)
         tol_row.columnconfigure(0, weight=1)
         self.tol_label = ttk.Label(tol_row, text="Tolerance")
@@ -1682,28 +1725,14 @@ class App:
         self.tol_scale = ttk.Scale(side, from_=10, to=240, orient="horizontal", command=self._on_tol_drag)
         self.tol_scale.set(BG_TOL)
         place(self.tol_scale, sticky="ew", pady=(P(2), P(6)))
-        place(
-            ttk.Label(
-                side,
-                text="Removes colors matching the image border. Click the preview to pick a "
-                "background color (Shift+click adds more).",
-                style="Hint.TLabel",
-                wraplength=wrap,
-                justify="left",
-            )
+        self.mode_hint = ttk.Label(
+            side,
+            text="",
+            style="Hint.TLabel",
+            wraplength=wrap,
+            justify="left",
         )
-
-        section("Object outline")
-        place(
-            ttk.Label(
-                side,
-                text="Drag a loop around an object to cut it out. Right-click the preview to clear.",
-                style="Hint.TLabel",
-                wraplength=wrap,
-                justify="left",
-            ),
-            pady=(0, P(8)),
-        )
+        place(self.mode_hint, pady=(0, P(8)))
         self.btn_reset_seeds = ttk.Button(side, text="Clear picks & outline", command=self.clear_picks)
         place(self.btn_reset_seeds)
 
@@ -1730,7 +1759,6 @@ class App:
         )
         # Fires on arrow clicks and on every keystroke, so the preview always matches the export
         self.opt_colors.trace_add("write", lambda *_a: self.schedule_live_preview())
-        self.opt_transp.trace_add("write", lambda *_a: self._update_mode_widgets())
 
         section("Export")
         self.btn = ttk.Button(side, text="Save PNG", style="Accent.TButton", command=self.apply)
@@ -1939,14 +1967,31 @@ class App:
         return ox + rel_x * disp_w, oy + rel_y * disp_h
 
     def _draw_lasso(self):
-        if not self.lasso or self.source_rgba is None:
+        if not self.lasso or self.source_rgba is None or self.opt_mode.get() != "outline":
             return
         flat = [c for p in self.lasso for c in self._source_to_canvas(*p)]
         self.canvas.create_polygon(
             *flat, outline=self.palette["outline"], fill="", width=self.px(2), dash=(6, 4), tags="lasso"
         )
 
-    # --- mouse: drag = outline an object, click = pick background ------------------------------
+    # --- mouse: mode-dependent click to remove color or drag to outline object -----------------
+
+    def _push_history(self):
+        self._history.append((list(self.seeds), list(self.lasso)))
+
+    def undo(self, event=None):
+        """Ctrl+Z: undo the last color click or outline action one step at a time."""
+        if event is not None and isinstance(event.widget, (ttk.Spinbox, tkinter.Entry)):
+            return
+        if self._busy or self._drag:
+            return
+        if not self._history:
+            self.set_msg("Nothing to undo.")
+            return
+        self.seeds, self.lasso = self._history.pop()
+        self.canvas.delete("lasso")
+        self._update_mode_widgets()
+        self.update_live_preview()
 
     def on_press(self, event):
         self.canvas.focus_set()  # so Space (compare) is not swallowed by a focused button
@@ -1955,6 +2000,9 @@ class App:
             return
         if self._comparing or self._busy:
             return
+        if self.opt_mode.get() == "color":
+            self.pick_background(event)
+            return
         self._drag = [(event.x, event.y)]
         self._drag_far = False
 
@@ -1962,13 +2010,17 @@ class App:
         if not self._drag:
             return
         lx, ly = self._drag[-1]
-        if np.hypot(event.x - lx, event.y - ly) < 3:
-            return
-        self._drag.append((event.x, event.y))
+        if np.hypot(event.x - lx, event.y - ly) >= 3:
+            self._drag.append((event.x, event.y))
         sx, sy = self._drag[0]
         if not self._drag_far and np.hypot(event.x - sx, event.y - sy) >= self.DRAG_MIN_PX:
             self._drag_far = True
+        if len(self._drag) < 2 and (event.x, event.y) == (sx, sy):
+            return
         flat = [c for p in self._drag for c in p]
+        if self._drag[-1] != (event.x, event.y):
+            flat.extend((event.x, event.y))
+        flat.extend((sx, sy))
         if self.canvas.find_withtag("lasso_live"):
             self.canvas.coords("lasso_live", *flat)
         else:
@@ -1988,7 +2040,7 @@ class App:
         if not pts or self.source_rgba is None:
             return
         if not far:
-            self.pick_background(event)
+            self.set_msg("Drag a loop around the object to cut it out.")
             return
         pts.append((event.x, event.y))
         src = []
@@ -2000,8 +2052,10 @@ class App:
             self.set_msg("Outline too small — drag a loop around the object.")
             self._draw_lasso()
             return
+        if src[-1] != src[0]:
+            src.append(src[0])
+        self._push_history()
         self.lasso = src
-        self.opt_transp.set(True)
         self.opt_crop.set(True)
         self._update_mode_widgets()
         self.update_live_preview()
@@ -2013,16 +2067,24 @@ class App:
         src_w, src_h = self.source_rgba.size
         ix = int(np.clip(round(p[0]), 0, src_w - 1))
         iy = int(np.clip(round(p[1]), 0, src_h - 1))
-        shift_held = bool(event.state & 0x0001)
-        if shift_held:
-            self.seeds.append((ix, iy))
-        else:
-            self.seeds = [(ix, iy)]
-        if not self.opt_transp.get():
-            self.opt_transp.set(True)
+        self._push_history()
+        self.seeds.append((ix, iy))
+        self._update_mode_widgets()
         self.update_live_preview()
 
     # --- options ------------------------------------------------------------------------------
+
+    def _on_mode_change(self):
+        self.cancel_drag()
+        self.canvas.delete("lasso")
+        self._update_mode_widgets()
+        self.update_live_preview()
+
+    def _active_transp_state(self):
+        """Return (do_transp, seeds, lasso, use_border) for the currently selected mode."""
+        seeds = list(self.seeds) or None
+        lasso = list(self.lasso) or None
+        return bool(seeds or lasso), seeds, lasso, False
 
     def _on_tol_drag(self, value):
         v = int(round(float(value)))
@@ -2037,11 +2099,22 @@ class App:
         self.tol_value.configure(text=str(int(v)))
 
     def _update_mode_widgets(self):
-        """Grey out what does not apply: tolerance in outline mode, holes without transparency."""
-        self.tol_scale.state(["disabled"] if self.lasso else ["!disabled"])
-        muted = "Muted.TLabel" if self.lasso else "TLabel"
-        self.tol_label.configure(style=muted)
-        self.chk_h.state(["!disabled"] if self.opt_transp.get() else ["disabled"])
+        """Update hints and grey out controls that do not apply to the active mode."""
+        is_outline = self.opt_mode.get() == "outline"
+        self.tol_scale.state(["disabled"] if is_outline else ["!disabled"])
+        self.tol_label.configure(style="Muted.TLabel" if is_outline else "TLabel")
+        has_transp = bool(self.lasso or self.seeds)
+        self.chk_h.state(["!disabled"] if has_transp else ["disabled"])
+        if is_outline:
+            self.mode_hint.configure(
+                text="Drag a loop around an object to cut it out. "
+                "Ctrl+Z undoes, right-click clears."
+            )
+        else:
+            self.mode_hint.configure(
+                text="Click any color in the preview to delete it (click more colors to remove them too). "
+                "Ctrl+Z undoes, right-click clears."
+            )
 
     def _update_compare_state(self):
         can = self.source_rgba is not None and self.last_preview is not self.source_rgba
@@ -2050,6 +2123,7 @@ class App:
     def clear_picks(self):
         if not self.seeds and not self.lasso:
             return
+        self._push_history()
         self.seeds = []
         self.lasso = []
         self.canvas.delete("lasso")
@@ -2060,8 +2134,10 @@ class App:
         """Back to the original picture: no outline or picks, all options off, defaults restored."""
         self.seeds = []
         self.lasso = []
+        self._history = []
         self.canvas.delete("lasso")
-        for var in (self.opt_transp, self.opt_holes, self.opt_crop, self.opt_bin):
+        self.opt_mode.set("color")
+        for var in (self.opt_holes, self.opt_crop, self.opt_bin):
             var.set(False)
         self._set_tolerance(BG_TOL)
         self.opt_colors.set(DEFAULT_SVG_COLORS)  # its trace schedules a preview; cancelled below
@@ -2112,7 +2188,7 @@ class App:
         if self.source_rgba is None:
             return
         self._comparing = False
-        do_t = self.opt_transp.get()
+        do_t, raw_seeds, raw_lasso, use_border = self._active_transp_state()
         do_h = self.opt_holes.get()
         do_c = self.opt_crop.get()
         do_b = self.opt_bin.get()
@@ -2122,13 +2198,16 @@ class App:
             self._crop_box = (0, 0, self.source_rgba.width, self.source_rgba.height)
             self._is_icon_preview = False
             self.last_preview = self.source_rgba
-            self.last_label = "Original image. Choose options on the right, or drag around an object."
+            if self.opt_mode.get() == "outline":
+                self.last_label = "Original image. Drag a loop around an object to cut it out."
+            else:
+                self.last_label = "Original image. Click a color in the image to delete it."
             self.show_image(self.source_rgba, self.last_label)
             self._update_compare_state()
             return
         s = self.preview_scale
-        seeds = [(x * s, y * s) for x, y in self.seeds] or None
-        lasso = [(x * s, y * s) for x, y in self.lasso] or None
+        seeds = [(x * s, y * s) for x, y in raw_seeds] if raw_seeds else None
+        lasso = [(x * s, y * s) for x, y in raw_lasso] if raw_lasso else None
         try:
             _, preview, notes, crop_box = render_preview(
                 self.preview_src,
@@ -2141,6 +2220,7 @@ class App:
                 bin_colors=do_b,
                 n_colors=n_colors,
                 lasso=lasso,
+                use_border=use_border,
             )
         except Exception as exc:  # pythonw has no console: surface the error in the UI
             self.set_msg(f"Preview error: {exc}")
@@ -2158,11 +2238,11 @@ class App:
         if s != 1.0:  # the preview ran on a downscaled copy: report the crop in real image pixels
             cx0, cy0, cx1, cy1 = self._crop_box
             notes = [f"cropped to {cx1 - cx0}x{cy1 - cy0}" if n.startswith("cropped to") else n for n in notes]
-        if self.seeds:
-            notes.append(f"{len(self.seeds)} background pick(s)")
+        if raw_seeds:
+            notes.append(f"{len(raw_seeds)} color pick(s)")
         if do_b and not colors_ok:
             notes.append(f"invalid color count, using {n_colors}")
-        if do_t and not self.lasso:
+        if raw_seeds or (do_t and not raw_lasso):
             notes.append(f"tolerance {tol}")
         self.last_preview = preview
         self.last_label = "Preview: " + (" · ".join(notes) if notes else "ready")
@@ -2205,6 +2285,7 @@ class App:
             self.preview_scale = 1.0
         self.seeds = []
         self.lasso = []
+        self._history = []
         self._comparing = False
         self._update_mode_widgets()
         self._hide_link()
@@ -2215,9 +2296,12 @@ class App:
         self.info_label.configure(text=f"{rgba.width} × {rgba.height} px")
         self.canvas.delete("drophint")
         self.last_preview = rgba
-        self.last_label = "Original image. Choose options on the right, or drag around an object."
+        if self.opt_mode.get() == "outline":
+            self.last_label = "Original image. Drag a loop around an object to cut it out."
+        else:
+            self.last_label = "Original image. Click a color in the image to delete it."
         self.show_image(rgba, self.last_label)
-        if self.opt_transp.get() or self.opt_crop.get() or self.opt_bin.get():
+        if self.opt_crop.get() or self.opt_bin.get():
             self.update_live_preview()
         self._update_compare_state()
         if extra_msg:
@@ -2325,16 +2409,18 @@ class App:
         if self._busy:
             return
         n_colors, _ = self._get_color_count()
+        _, raw_seeds, raw_lasso, use_border = self._active_transp_state()
         path = self.current_path
         kwargs = dict(
             do_icon=do_icon,
             tol=self.opt_tol.get(),
             remove_holes=self.opt_holes.get(),
-            seeds=list(self.seeds) or None,
+            seeds=raw_seeds,
             do_svg=do_svg,
             bin_colors=bin_colors,
             n_colors=n_colors,
-            lasso=list(self.lasso) or None,
+            lasso=raw_lasso,
+            use_border=use_border,
         )
         results = queue.Queue()
 
@@ -2384,22 +2470,28 @@ class App:
     def apply(self):
         if self._need_picture():
             return
-        do_t, do_c, do_b = self.opt_transp.get(), self.opt_crop.get(), self.opt_bin.get()
+        do_t = self._active_transp_state()[0]
+        do_c, do_b = self.opt_crop.get(), self.opt_bin.get()
         if not (do_t or do_c or do_b):
-            self.set_msg("Nothing to save yet — choose at least one option on the right.")
+            if self.opt_mode.get() == "outline":
+                self.set_msg("Nothing to save yet — drag an outline around an object or choose an option on the right.")
+            else:
+                self.set_msg("Nothing to save yet — click a color to delete or choose an option on the right.")
             return
         self._run_process(do_t, do_c, do_icon=False, do_svg=False, bin_colors=do_b)
 
     def export_icon(self):
         if self._need_picture():
             return
-        do_t, do_c, do_b = self.opt_transp.get(), self.opt_crop.get(), self.opt_bin.get()
+        do_t = self._active_transp_state()[0]
+        do_c, do_b = self.opt_crop.get(), self.opt_bin.get()
         self._run_process(do_t, do_c, do_icon=True, do_svg=False, bin_colors=do_b)
 
     def export_svg(self):
         if self._need_picture():
             return
-        do_t, do_c = self.opt_transp.get(), self.opt_crop.get()
+        do_t = self._active_transp_state()[0]
+        do_c = self.opt_crop.get()
         self._run_process(do_t, do_c, do_icon=False, do_svg=True, bin_colors=True)
 
     def bind_events(self):

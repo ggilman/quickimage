@@ -267,7 +267,24 @@ def main():
         bs = np.asarray(binned_src)
         assert len(np.unique(bs[bs[..., 3] > 0][:, :3], axis=0)) == 2, "binned icon source must have 2 colors"
 
+    # Click-to-delete color mode (use_border=False): only clicked colors are deleted, not unpicked borders
+    click_im = Image.new("RGB", (100, 100), (240, 240, 240))  # light border background
+    ImageDraw.Draw(click_im).rectangle([15, 15, 45, 85], fill=(220, 30, 30))  # red bar
+    ImageDraw.Draw(click_im).rectangle([55, 15, 85, 85], fill=(30, 60, 220))  # blue bar
+    # Clicking only the red bar deletes red while keeping the unpicked border and blue bar opaque
+    click_red, _ = make_transparent(click_im, seeds=[(30, 50)], use_border=False)
+    cra = np.asarray(click_red)
+    assert cra[50, 30, 3] == 0, "clicked red bar must become transparent"
+    assert cra[2, 2, 3] == 255, "unclicked border must stay opaque when use_border=False"
+    assert cra[50, 70, 3] == 255, "unclicked blue bar must stay opaque"
+    # Clicking both red and border deletes both while keeping blue opaque
+    click_both, _ = make_transparent(click_im, seeds=[(30, 50), (2, 2)], use_border=False)
+    cba = np.asarray(click_both)
+    assert cba[50, 30, 3] == 0 and cba[2, 2, 3] == 0, "both clicked colors must become transparent"
+    assert cba[50, 70, 3] == 255, "blue bar must remain opaque"
+
     test_lasso_extraction()
+    test_mode_and_undo()
     test_dependencies()
     print("all tests passed")
 
@@ -404,6 +421,90 @@ def test_lasso_extraction():
         with Image.open(crop_only) as res:
             assert abs(res.width - 81) <= 3 and abs(res.height - 101) <= 3, res.size
             assert np.asarray(res.convert("RGBA"))[..., 3].min() == 255
+
+
+def test_mode_and_undo():
+    app = quickimage.App()
+    app.build_ui()
+    app.bind_events()
+    try:
+        assert app.opt_mode.get() == "color", "default mode must be 'color'"
+        im = Image.new("RGBA", (100, 100), (240, 240, 240, 255))
+        ImageDraw.Draw(im).rectangle([20, 20, 45, 80], fill=(220, 30, 30, 255))
+        ImageDraw.Draw(im).rectangle([55, 20, 80, 80], fill=(30, 60, 220, 255))
+        app.bw, app.bh = 200, 200
+        app.load_picture(Path("dummy.png"), im)
+
+        # Before any click, no transparency is active
+        assert app._active_transp_state() == (False, None, None, False)
+
+        # Simulate clicking the red bar in 'color' mode -> deletes red, accumulates clicks, Ctrl+Z undoes
+        cx_red, cy_red = app._source_to_canvas(30, 50)
+        evt = type("E", (), {"x": int(round(cx_red)), "y": int(round(cy_red)), "state": 0, "widget": app.canvas})()
+        app.on_press(evt)
+        assert len(app.seeds) == 1
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0, "clicked red color must become transparent"
+        assert np.asarray(app.last_preview)[2, 2, 3] == 255, "unclicked background border must stay opaque"
+
+        # Second click on border adds to seeds without needing Shift
+        cx_bg, cy_bg = app._source_to_canvas(5, 5)
+        evt2 = type("E", (), {"x": int(round(cx_bg)), "y": int(round(cy_bg)), "state": 0, "widget": app.canvas})()
+        app.on_press(evt2)
+        assert len(app.seeds) == 2
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0 and np.asarray(app.last_preview)[2, 2, 3] == 0
+        assert np.asarray(app.last_preview)[50, 70, 3] == 255, "blue bar must remain opaque"
+
+        # Ctrl+Z undoes second click, keeping the first
+        app.undo()
+        assert len(app.seeds) == 1
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0 and np.asarray(app.last_preview)[2, 2, 3] == 255
+
+        # Ctrl+Z again returns to original image (0 seeds)
+        app.undo()
+        assert len(app.seeds) == 0
+        assert app.last_preview is app.source_rgba
+
+        # Switching to outline mode enables drag-to-outline
+        app.opt_mode.set("outline")
+        app._on_mode_change()
+        assert "disabled" in app.tol_scale.state(), "tolerance slider should be disabled in outline mode"
+
+        # Dragging in outline mode draws a closing line back to the initial point and closes the loop on release
+        p0x, p0y = [int(round(c)) for c in app._source_to_canvas(15, 15)]
+        p1x, p1y = [int(round(c)) for c in app._source_to_canvas(50, 15)]
+        p2x, p2y = [int(round(c)) for c in app._source_to_canvas(50, 85)]
+        p3x, p3y = [int(round(c)) for c in app._source_to_canvas(15, 85)]
+        mk_evt = lambda x, y: type("E", (), {"x": x, "y": y, "state": 0, "widget": app.canvas})()
+        app.on_press(mk_evt(p0x, p0y))
+        app.on_motion(mk_evt(p1x, p1y))
+        app.on_motion(mk_evt(p2x, p2y))
+        live_items = app.canvas.find_withtag("lasso_live")
+        assert len(live_items) == 1
+        live_coords = [int(round(c)) for c in app.canvas.coords("lasso_live")]
+        assert live_coords[:2] == [p0x, p0y] and live_coords[-2:] == [p0x, p0y], (
+            f"live outline must close back to start point, got {live_coords}"
+        )
+        app.on_release(mk_evt(p3x, p3y))
+        assert len(app.lasso) >= 4
+        assert app.lasso[-1] == app.lasso[0], "released outline must close back to initial point"
+        outline_preview = app.last_preview
+        assert outline_preview is not app.source_rgba, "outline must produce a cutout preview"
+
+        # Switching back to 'Delete clicked color' preserves the outline cutout instead of reverting
+        app.opt_mode.set("color")
+        app._on_mode_change()
+        assert app._active_transp_state() == (True, None, list(app.lasso), False)
+        assert np.array_equal(np.asarray(app.last_preview), np.asarray(outline_preview)), (
+            "switching to 'Delete clicked color' must keep the outlined image"
+        )
+        assert len(app.canvas.find_withtag("lasso")) == 0, "outline overlay must stay hidden in color mode"
+
+        # Clicking a color inside the kept object deletes that color on top of the outline cutout
+        cx_r2, cy_r2 = app._source_to_canvas(30, 50)
+        app.on_press(mk_evt(int(round(cx_r2)), int(round(cy_r2))))
+        assert np.asarray(app.last_preview)[50, 30, 3] == 0, "clicked color inside outlined object must be deleted"
+    finally:
+        app.root.destroy()
 
 
 if __name__ == "__main__":
