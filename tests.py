@@ -1,31 +1,28 @@
-import importlib.util
 import io
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-_spec = importlib.util.spec_from_file_location("quickimage", Path(__file__).resolve().parent / "quickimage.pyw")
-quickimage = importlib.util.module_from_spec(_spec)
-sys.modules["quickimage"] = quickimage
-_spec.loader.exec_module(quickimage)
-
 import numpy as np
 from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
-from quickimage import (
-    ICON_SIZES,
+
+from quickimage import bootstrap
+from quickimage.core.config import ICON_SIZES
+from quickimage.core.io import load_rgba
+from quickimage.core.ops import (
+    apply_crop_options,
     apply_palette_edits,
-    batch_process,
     content_bbox,
-    image_to_svg,
     make_transparent,
-    process,
-    quantize_foreground_colors,
     refine_alpha_mask,
-    save_svg,
     transform_image,
 )
+from quickimage.core.pipeline import batch_process, process, render_preview
+from quickimage.core.quantize import quantize_foreground_colors
+from quickimage.core.svg import image_to_svg
+from quickimage.ui.app import App
 
 
 def svg_path_points(path_el):
@@ -265,8 +262,8 @@ def main():
         bin_ico, bin_ico_note = process(src, False, True, True, bin_colors=True, n_colors=2)
         assert bin_ico.suffix == ".ico" and "2 color(s)" in bin_ico_note, f"bin+ico note: {bin_ico_note}"
         # The image fed to the icon resizer (before LANCZOS blends edges) must hold exactly 2 colors
-        binned_src, _, _, _ = quickimage.render_preview(
-            quickimage.load_rgba(src), False, True, do_icon=True, bin_colors=True, n_colors=2
+        binned_src, _, _, _ = render_preview(
+            load_rgba(src), False, True, do_icon=True, bin_colors=True, n_colors=2
         )
         bs = np.asarray(binned_src)
         assert len(np.unique(bs[bs[..., 3] > 0][:, :3], axis=0)) == 2, "binned icon source must have 2 colors"
@@ -305,33 +302,33 @@ def test_dependencies():
         for line in req.read_text(encoding="utf-8").splitlines()
         if line.strip() and not line.startswith("#")
     }
-    assert req_names == {d[1].lower() for d in quickimage.DEPENDENCIES}, (req_names, quickimage.DEPENDENCIES)
+    assert req_names == {d[1].lower() for d in bootstrap.DEPENDENCIES}, (req_names, bootstrap.DEPENDENCIES)
 
     # Missing packages are detected
     fake = ("no_such_module_xyz", "no-such-package", "testing", False)
-    assert quickimage.missing_dependencies((fake,) + quickimage.DEPENDENCIES[:1]) == [fake]
+    assert bootstrap.missing_dependencies((fake,) + bootstrap.DEPENDENCIES[:1]) == [fake]
 
     with tempfile.TemporaryDirectory() as td:
         # No venv yet: create it, then install every package into it
         venv = Path(td) / ".venv"
-        cmds = quickimage.install_commands(venv=venv)
+        cmds = bootstrap.install_commands(venv=venv)
         assert len(cmds) == 2 and cmds[0][1:3] == ["-m", "venv"] and cmds[0][-1] == str(venv), cmds
-        assert cmds[1][:4] == [str(quickimage.venv_python(venv)), "-m", "pip", "install"], cmds[1]
-        assert set(cmds[1]) >= {d[1] for d in quickimage.DEPENDENCIES}
+        assert cmds[1][:4] == [str(bootstrap.venv_python(venv)), "-m", "pip", "install"], cmds[1]
+        assert set(cmds[1]) >= {d[1] for d in bootstrap.DEPENDENCIES}
         assert not cmds[0][0].lower().endswith("pythonw.exe"), "venv must be created with a console python"
         # Existing venv: only install
-        quickimage.venv_python(venv).parent.mkdir(parents=True)
-        quickimage.venv_python(venv).write_bytes(b"")
-        assert len(quickimage.install_commands(venv=venv)) == 1
+        bootstrap.venv_python(venv).parent.mkdir(parents=True)
+        bootstrap.venv_python(venv).write_bytes(b"")
+        assert len(bootstrap.install_commands(venv=venv)) == 1
 
     # Command runner streams output and reports failures
     lines, done = [], []
-    quickimage.run_commands(
+    bootstrap.run_commands(
         [[sys.executable, "-c", "print('one'); print('two')"]], lines.append, lambda ok, err: done.append((ok, err))
     )
     assert "one" in lines and "two" in lines and done == [(True, None)], (lines, done)
     done.clear()
-    quickimage.run_commands(
+    bootstrap.run_commands(
         [[sys.executable, "-c", "import sys; sys.exit(3)"], [sys.executable, "-c", "print('never')"]],
         lines.append,
         lambda ok, err: done.append((ok, err)),
@@ -432,7 +429,7 @@ def test_lasso_extraction():
 
 
 def test_mode_and_undo():
-    app = quickimage.App()
+    app = App()
     app.build_ui()
     app.bind_events()
     try:
@@ -526,7 +523,7 @@ def test_mode_and_undo():
         # Crop padding & 1:1 square canvas options
         app.reset_all()
         rect_im = Image.new("RGBA", (80, 40), (20, 120, 220, 255))
-        padded = quickimage.apply_crop_options(rect_im, pad_px=5, square=True)
+        padded = apply_crop_options(rect_im, pad_px=5, square=True)
         assert padded.size == (90, 90), f"expected 90x90 square padded canvas, got {padded.size}"
         assert np.asarray(padded)[0, 0, 3] == 0 and np.asarray(padded)[45, 45, 3] == 255
 
@@ -552,7 +549,6 @@ def test_mode_and_undo():
 def test_transforms_and_zoom():
     from PIL import Image
     import numpy as np
-    from quickimage import App
 
     arr = np.zeros((20, 40, 4), dtype=np.uint8)
     arr[0:5, 0:10] = (255, 0, 0, 255)
@@ -607,7 +603,6 @@ def test_transforms_and_zoom():
 def test_edge_and_mask_refinement():
     from PIL import Image
     import numpy as np
-    from quickimage import App
 
     arr = np.zeros((40, 40, 4), dtype=np.uint8)
     arr[:, :] = (240, 240, 240, 255)
