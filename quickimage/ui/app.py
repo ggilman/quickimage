@@ -1078,7 +1078,7 @@ class App:
         ix = int(np.clip(round(p[0]), 0, src_w - 1))
         iy = int(np.clip(round(p[1]), 0, src_h - 1))
         self._push_history()
-        self.seeds.append((ix, iy))
+        self.seeds.append((ix, iy, int(self.opt_tol.get())))  # the tolerance sticks with this click
         self._update_mode_widgets()
         self.update_live_preview()
 
@@ -1104,7 +1104,11 @@ class App:
         self.tol_value.configure(text=str(v))
         if v != self.opt_tol.get():
             self.opt_tol.set(v)
-            self.schedule_live_preview()
+            if self.seeds:
+                # Each click keeps the tolerance it was made with; the slider is for the next click
+                self.set_msg(f"Tolerance {v} — used for your next click. Earlier clicks keep their own.")
+            else:
+                self.schedule_live_preview()
 
     def _set_tolerance(self, v):
         self.opt_tol.set(int(v))
@@ -1139,7 +1143,7 @@ class App:
         else:
             self.mode_hint.configure(
                 text="Click any color in the preview to delete it (click more colors to remove them too). "
-                "Ctrl+Z undoes, right-click clears."
+                "Each click uses the tolerance set when you click. Ctrl+Z undoes, right-click clears."
             )
 
     def _update_compare_state(self):
@@ -1432,7 +1436,7 @@ class App:
             self._update_compare_state()
             return
         s = self.preview_scale
-        seeds = [(x * s, y * s) for x, y in raw_seeds] if raw_seeds else None
+        seeds = [(x * s, y * s, *rest) for x, y, *rest in raw_seeds] if raw_seeds else None
         lasso = [(x * s, y * s) for x, y in raw_lasso] if raw_lasso else None
         scaled_strokes = (
             [(m, max(1.0, r * s), [(x * s, y * s) for x, y in pts], *rest) for m, r, pts, *rest in self.brush_strokes]
@@ -1483,7 +1487,10 @@ class App:
             notes.append(f"{len(raw_seeds)} color pick(s)")
         if do_b and not colors_ok:
             notes.append(f"invalid color count, using {n_colors}")
-        if raw_seeds or (do_t and not raw_lasso):
+        if raw_seeds:
+            tols = sorted({int(sd[2]) if len(sd) > 2 else tol for sd in raw_seeds})
+            notes.append(("tolerance " if len(tols) == 1 else "tolerances ") + ", ".join(map(str, tols)))
+        elif do_t and not raw_lasso:
             notes.append(f"tolerance {tol}")
         self.last_preview = preview
         self.last_label = "Preview: " + (" · ".join(notes) if notes else "ready")

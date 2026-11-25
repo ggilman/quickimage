@@ -157,19 +157,31 @@ def get_analysis(a):
     return result
 
 
-def seed_bg_mask(a, seeds, tol, analysis=None):
-    """Flood-fill background regions from user-picked (x, y) seed points."""
+def seed_tolerance(seed, default):
+    """A picked point is `(x, y)` or `(x, y, tolerance)`; the tolerance sticks with that click."""
+    return float(seed[2]) if len(seed) > 2 and seed[2] is not None else float(default)
+
+
+def seed_bg_mask(a, seeds, tol, analysis=None, noise_pad=0.0):
+    """Flood-fill background regions from user-picked seed points.
+
+    Each seed uses its own tolerance when it has one (else `tol`), plus `noise_pad`.
+    Returns (mask, distance to the owning seed's color, that color, that seed's tolerance).
+    """
     h, w = a.shape[:2]
     analysis = analysis or get_analysis(a)
     mask = np.zeros((h, w), dtype=bool)
     dist_map = np.full((h, w), np.inf, dtype=np.float32)
     bg_ref = np.zeros((h, w, 3), dtype=np.float32)
+    tol_map = np.full((h, w), float(tol) + noise_pad, dtype=np.float32)
 
-    for sx, sy in seeds:
+    for seed in seeds:
+        sx, sy = seed[0], seed[1]
+        seed_tol = seed_tolerance(seed, tol) + noise_pad
         ix = int(np.clip(round(sx), 0, w - 1))
         iy = int(np.clip(round(sy), 0, h - 1))
         scol, d = analysis.for_seed(a, ix, iy)
-        near = d <= tol
+        near = d <= seed_tol
         near[iy, ix] = True
         lab, _ = label(near, structure=BOX3)
         target = lab[iy, ix]
@@ -183,17 +195,21 @@ def seed_bg_mask(a, seeds, tol, analysis=None):
         better = reach & (d < dist_map)
         dist_map = np.where(better, d, dist_map)
         bg_ref[better] = scol
-    return mask, dist_map, bg_ref
+        tol_map[better] = seed_tol
+    return mask, dist_map, bg_ref, tol_map
 
 
 def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None, use_border=True):
     """Return (bg_mask, dist_field, bg_color_field, eff_tol) for image array `a`.
 
+    `eff_tol` is a number, or a per-pixel array when seeds carry their own tolerances (each pixel
+    then uses the tolerance of the seed whose color it is compared with).
     The returned dist/bg_color arrays may be shared cache entries: treat them as read-only.
     """
     an = get_analysis(a)
     bg_field, dist = an.bg_field, an.dist
-    eff_tol = float(tol) + min(18.0, an.noise_mad * 0.75)
+    noise_pad = min(18.0, an.noise_mad * 0.75)
+    eff_tol = float(tol) + noise_pad
     if use_border:
         vis = border_bg_mask(dist, eff_tol)
     else:
@@ -203,11 +219,13 @@ def compute_bg_selection(a, tol=BG_TOL, remove_holes=False, seeds=None, use_bord
         bg_field = np.zeros((h, w, 3), dtype=np.float32)
 
     if seeds:
-        s_mask, s_dist, s_bg = seed_bg_mask(a, seeds, eff_tol, analysis=an)
+        s_mask, s_dist, s_bg, s_tol = seed_bg_mask(a, seeds, tol, analysis=an, noise_pad=noise_pad)
         vis = vis | s_mask
         use_seed = s_dist < dist
         dist = np.where(use_seed, s_dist, dist)
         bg_field = np.where(use_seed[:, :, None], s_bg, bg_field)
+        if any(len(s) > 2 for s in seeds):
+            eff_tol = np.where(use_seed, s_tol, np.float32(eff_tol))
 
     if remove_holes:
         # Enclosed background holes are regions matching background color that sit inside the foreground silhouette

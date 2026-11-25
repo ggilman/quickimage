@@ -46,7 +46,8 @@ def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None,
     if not vis.any():
         return im, "no background matched"
 
-    soft_span = max(80.0, float(SOFT_TOL - BG_TOL) * (eff_tol / max(1.0, float(BG_TOL))))
+    # eff_tol may be per-pixel (each click keeps its own tolerance)
+    soft_span = np.maximum(80.0, float(SOFT_TOL - BG_TOL) * (eff_tol / max(1.0, float(BG_TOL))))
     soft_tol = eff_tol + soft_span
 
     # Multi-pixel spatial feathering (up to 2px from background boundary)
@@ -57,7 +58,9 @@ def make_transparent(im, tol=BG_TOL, remove_holes=False, seeds=None, lasso=None,
     alpha[vis] = 0
 
     if fringe_zone.any():
-        color_ramp = np.clip((dist[fringe_zone] - eff_tol) / (soft_tol - eff_tol), 0.0, 1.0)
+        lo = np.broadcast_to(eff_tol, dist.shape)[fringe_zone]
+        hi = np.broadcast_to(soft_tol, dist.shape)[fringe_zone]
+        color_ramp = np.clip((dist[fringe_zone] - lo) / (hi - lo), 0.0, 1.0)
         # Pixels 2px deep get mostly opaque unless very close in color to background
         spatial_boost = np.clip((fg_dist[fringe_zone] - 1.0) * 0.45, 0.0, 0.45)
         a_norm = np.clip(color_ramp + spatial_boost * color_ramp, 0.0, 1.0)

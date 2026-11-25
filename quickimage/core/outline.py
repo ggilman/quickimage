@@ -76,7 +76,8 @@ def lasso_object_mask(rgb, lasso, bg_hints=None, remove_holes=False):
         return alpha, bg_col, note
 
     gc = np.where(inside, cv2.GC_PR_FGD, cv2.GC_BGD).astype(np.uint8)
-    for hx, hy in bg_hints or ():
+    for hint in bg_hints or ():
+        hx, hy = hint[0], hint[1]
         cx, cy = int(round((hx - x0) * sx)), int(round((hy - y0) * sy))
         if 0 <= cx < sw and 0 <= cy < sh:
             gc[max(0, cy - 1) : cy + 2, max(0, cx - 1) : cx + 2] = cv2.GC_BGD
@@ -164,7 +165,7 @@ def get_lasso_mask(rgb, lasso, bg_hints=None, remove_holes=False):
     key = (
         _image_key(rgb),
         tuple((round(float(x), 2), round(float(y), 2)) for x, y in lasso),
-        tuple((round(float(x), 2), round(float(y), 2)) for x, y in bg_hints or ()),
+        tuple((round(float(h[0]), 2), round(float(h[1]), 2)) for h in bg_hints or ()),
         bool(remove_holes),
         GRABCUT_MAX_SIDE,
     )

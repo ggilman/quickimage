@@ -299,6 +299,7 @@ def main():
     test_palette_edits_do_not_chain()
     test_batch_output_options()
     test_brush_cursor_and_keys()
+    test_tolerance_sticks_with_click()
     test_dependencies()
     print("all tests passed")
 
@@ -997,6 +998,67 @@ def test_brush_cursor_and_keys():
         assert [f["name"] for f in dlg.selected] == ["Blue", "Black"]
         dlg._ok()
         assert [f["name"] for f in dlg.result] == ["Blue", "Black"]
+    finally:
+        app.root.destroy()
+
+
+def make_two_background_image():
+    """Light-gray left background with a slightly darker patch, blue right background, red objects."""
+    arr = np.zeros((60, 120, 4), np.uint8)
+    arr[..., 3] = 255
+    arr[:, :60, :3] = (230, 230, 230)
+    arr[20:40, 5:20, :3] = (200, 200, 200)  # differs from the left background by about 90
+    arr[:, 60:, :3] = (30, 30, 200)
+    arr[22:38, 30:50, :3] = (200, 30, 30)
+    arr[22:38, 80:100, :3] = (200, 30, 30)
+    return Image.fromarray(arr, "RGBA")
+
+
+def test_tolerance_sticks_with_click():
+    im = make_two_background_image()
+    alpha = lambda out: np.asarray(out)[..., 3]
+    # A click's own tolerance wins over the current tolerance
+    low, _ = make_transparent(im, tol=200, seeds=[(2, 2, 60)], use_border=False)
+    assert alpha(low)[2, 2] == 0 and alpha(low)[30, 10] == 255, "patch kept at the click's tolerance 60"
+    high, _ = make_transparent(im, tol=60, seeds=[(2, 2, 140)], use_border=False)
+    assert alpha(high)[30, 10] == 0, "patch removed at the click's tolerance 140"
+    # Clicks without a stored tolerance still use the current one (old behavior)
+    legacy, _ = make_transparent(im, tol=140, seeds=[(2, 2)], use_border=False)
+    assert alpha(legacy)[30, 10] == 0
+    # Two clicks, each with its own tolerance
+    both, _ = make_transparent(im, tol=200, seeds=[(2, 2, 60), (118, 2, 120)], use_border=False)
+    a = alpha(both)
+    assert a[2, 2] == 0 and a[2, 118] == 0 and a[30, 10] == 255 and a[30, 40] == 255 and a[30, 90] == 255
+
+    app = App()
+    app.build_ui()
+    try:
+        app.bw, app.bh = 624, 324
+        app.load_picture(Path("bg.png"), im)
+
+        class Ev:
+            def __init__(self, x, y):
+                self.x, self.y, self.widget = x, y, app.canvas
+
+        app._set_tolerance(60)
+        app.pick_background(Ev(*app._source_to_canvas(2, 2)))
+        assert app.seeds == [(2, 2, 60)], app.seeds
+        patch_alpha = lambda: np.asarray(app.last_preview.convert("RGBA"))[30, 10, 3]
+        assert patch_alpha() == 255
+        # Raising the tolerance for the next click must not change the first click
+        before = np.asarray(app.last_preview).copy()
+        app.tol_scale.set(200)
+        app._on_tol_drag(200)
+        app.update_live_preview()
+        assert (np.asarray(app.last_preview) == before).all(), "the earlier click must keep its tolerance"
+        app._on_tol_drag(190)
+        assert "next click" in app.status.cget("text"), app.status.cget("text")
+        app.pick_background(Ev(*app._source_to_canvas(118, 2)))
+        assert app.seeds[-1][2] == 190 and patch_alpha() == 255
+        assert "tolerances 60, 190" in app.last_label, app.last_label
+        # Undo removes the second click only; the first keeps tolerance 60
+        app.undo()
+        assert app.seeds == [(2, 2, 60)] and patch_alpha() == 255
     finally:
         app.root.destroy()
 
